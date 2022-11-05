@@ -208,7 +208,8 @@ main(int argc, char const *argv[])
 		exit(1);
 	}
 
-	const auto config = toml::parse(argv[1]);
+  //workload::generate_workload_a(argv[1], std::stoi(argv[2]));
+  const auto config = toml::parse(argv[1]);
 
 	run(config);
 

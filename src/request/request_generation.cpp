@@ -18,34 +18,39 @@ std::vector<Request> import_cs_requests(const std::string& file_path)
     std::vector<Request> requests;
     std::string line;
     char type_buffer[2];
-    char key_buffer[11];
+    char key_buffer[20];
     char arg_buffer[129];
     auto* reading_buffer = type_buffer;
     auto buffer_index = 0;
-    while (std::getline(infile, line)) {
-        for (auto& character: line) {
-            if (character == ',') {
-                reading_buffer[buffer_index] = '\0';
-                if (reading_buffer == type_buffer) {
-                    reading_buffer = key_buffer;
-                } else if (reading_buffer == key_buffer) {
-                    reading_buffer = arg_buffer;
+    if (infile.is_open()) {
+        while (std::getline(infile, line)) {
+            for (auto& character: line) {
+                if (character == ',') {
+                    reading_buffer[buffer_index] = '\0';
+                    if (reading_buffer == type_buffer) {
+                        reading_buffer = key_buffer;
+                    } else if (reading_buffer == key_buffer) {
+                        reading_buffer = arg_buffer;
+                    } else {
+                        reading_buffer = type_buffer;
+                    }
+                    buffer_index = 0;
                 } else {
-                    reading_buffer = type_buffer;
-                    requests.emplace_back(make_request(
-                        type_buffer,
-                        key_buffer,
-                        arg_buffer
-                    ));
+                    reading_buffer[buffer_index] = character;
+                    buffer_index++;
                 }
-                buffer_index = 0;
-            } else {
-                reading_buffer[buffer_index] = character;
-                buffer_index++;
             }
+            requests.emplace_back(make_request(
+                type_buffer,
+                key_buffer,
+                arg_buffer
+            ));
         }
+        infile.close();
+    } else {
+        std::cerr << "Arquivo não encontrado ou falha ao abrir o arquivo!" << std::endl;
+        exit(1);
     }
-
     return requests;
 }
 
