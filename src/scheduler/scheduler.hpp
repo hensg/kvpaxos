@@ -33,15 +33,27 @@ public:
     Scheduler(int n_requests,
                 int repartition_interval,
                 int n_partitions,
+                int n_checkpointers,
                 model::CutMethod repartition_method
     ) : n_partitions_{n_partitions},
         repartition_interval_{repartition_interval},
-        repartition_method_{repartition_method}
+        repartition_method_{repartition_method},
+        n_checkpointers_{n_checkpointers}
     {
+        partition_count_ = 0;
         for (auto i = 0; i < n_partitions_; i++) {
             auto* partition = new Partition<T>(i);
             partitions_.emplace(i, partition);
+            partitions_to_checkpoint_.emplace(i);
+            crossborder_requests_.push_back(0);
+            requests_per_thread_.push_back(0);
         }
+        for (auto i = 0; i < n_partitions_; i++) {
+          for (auto j = 0; j < n_partitions_; j++) {
+            conflict_matrix_[i][j] = 0;
+          }
+        }
+      
         data_to_partition_ = new std::unordered_map<T, Partition<T>*>();
 
         sem_init(&graph_requests_semaphore_, 0, 0);
@@ -55,7 +67,6 @@ public:
         }
         delete data_to_partition_;
     }
-
     void process_populate_requests(const std::vector<workload::Request>& requests) {
         for (auto& request : requests) {
             add_key(request.key());
@@ -82,6 +93,18 @@ public:
         return repartition_timestamps_;
     }
 
+    std::unordered_map<int, Partition<T>*>& get_partitions() {
+        return partitions_;
+    }
+
+    std::vector<int>& get_crossborder_requests() {
+        return crossborder_requests_;
+    }
+
+    std::vector<int>& get_requests_per_thread() {
+        return requests_per_thread_;
+    }
+
     void schedule_and_answer(struct client_message& request) {
         auto type = static_cast<request_type>(request.type);
         if (type == SYNC) {
@@ -95,6 +118,8 @@ public:
         }
 
         auto partitions = std::move(involved_partitions(request));
+        crossborder_requests_[partitions.size()]++;
+
         if (partitions.empty()) {
             request.type = ERROR;
             return partitions_.at(0)->push_request(request);
@@ -105,9 +130,19 @@ public:
             sync_partitions(partitions);
             arbitrary_partition->push_request(request);
             sync_partitions(partitions);
+
+            for (auto& p: partitions) {
+                for (auto& p2: partitions) {
+                    conflict_matrix_[p->id()][p2->id()] = 1;
+                }
+            }
         } else {
+            conflict_matrix_[arbitrary_partition->id()][arbitrary_partition->id()] = 1;
             arbitrary_partition->push_request(request);
         }
+
+        requests_per_thread_[arbitrary_partition->id()]++;
+        n_dispatched_requests_++;
 
         if (repartition_method_ != model::ROUND_ROBIN) {
             graph_requests_mutex_.lock();
@@ -115,7 +150,6 @@ public:
             graph_requests_mutex_.unlock();
             sem_post(&graph_requests_semaphore_);
 
-            n_dispatched_requests_++;
             if (
                 n_dispatched_requests_ % repartition_interval_ == 0
             ) {
@@ -132,6 +166,58 @@ public:
                 sync_all_partitions();
             }
         }
+
+        if (
+            n_dispatched_requests_ % repartition_interval_ == 0
+        ) {
+            //std::cout << "Partitions Before: [";
+            //for (auto& p : partitions_to_checkpoint_) {
+            //    std::cout << p << ",";
+            //}
+            //std::cout << "]" << std::endl;
+            struct client_message checkpoint_message; 
+            checkpoint_message.type = CHECKPOINT;
+            const int partition_id = *partitions_to_checkpoint_.begin();
+
+            std::unordered_set<Partition<T>*> partitions_turn;
+            for (int i = 0; i < n_partitions_; i++) {
+                if (conflict_matrix_[partition_id][i] == 1) {
+                    partitions_turn.emplace(partitions_.at(i));
+                    partitions_to_checkpoint_.erase(i);
+                    conflict_matrix_[partition_id][i] = 0;
+                    for (int k = 0; k < n_partitions_; k++) {
+                        if (k != i && conflict_matrix_[i][k] == 1) {
+                            partitions_turn.emplace(partitions_.at(i));
+                            conflict_matrix_[i][k] = 0;
+                        }
+                    }
+                }
+            }
+            sync_partitions(partitions_turn);
+            for (auto& p: partitions_turn) {
+                p->push_request(checkpoint_message);
+            }
+            ckp_turns.push_back(partitions_turn);
+            sync_partitions(partitions_turn);
+            if (partitions_to_checkpoint_.size() == 0) {
+                //std::cout << "Rebuind partitions for checkpointing\n";
+                for (int i = 0; i < n_partitions_; i++) {
+                    partitions_to_checkpoint_.emplace(i);
+                    for (auto j = 0; j < n_partitions_; j++) {
+                      conflict_matrix_[i][j] = 0;
+                    }
+                }
+            }
+            //std::cout << "Partitions now: [";
+            //for (auto& p : partitions_to_checkpoint_) {
+            //    std::cout << p << ",";
+            //}
+            //std::cout << "]" << std::endl;
+        }
+    }
+
+    std::vector<std::unordered_set<Partition<T>*>>& get_ckp_turns() {
+        return ckp_turns;
     }
 
 private:
@@ -154,6 +240,7 @@ private:
             partitions.insert(data_to_partition_->at(request.key + i));
         }
 
+        
         return partitions;
     }
 
@@ -274,7 +361,6 @@ private:
                 first_repartition
             )
         );
-
         delete data_to_partition_;
         data_to_partition_ = new std::unordered_map<T, Partition<T>*>();
         auto sorted_vertex = std::move(workload_graph_.sorted_vertex());
@@ -297,11 +383,14 @@ private:
     int n_partitions_;
     int round_robin_counter_ = 0;
     int sync_counter_ = 0;
-    int n_dispatched_requests_ = 0;
+    long n_dispatched_requests_ = 0;
     kvstorage::Storage storage_;
     std::unordered_map<int, Partition<T>*> partitions_;
     std::unordered_map<T, Partition<T>*>* data_to_partition_;
     std::unordered_map<T, Partition<T>*> data_to_partition_copy_;
+
+    int conflict_matrix_[32][32];
+    std::unordered_set<int> partitions_to_checkpoint_;
 
     std::thread graph_thread_;
     std::queue<struct client_message> graph_requests_queue_;
@@ -311,9 +400,16 @@ private:
     std::vector<time_point> repartition_timestamps_;
     model::Graph<T> workload_graph_;
     model::CutMethod repartition_method_;
-    int repartition_interval_;
+    long repartition_interval_;
     bool first_repartition = true;
     pthread_barrier_t repartition_barrier_;
+
+    std::vector<int> crossborder_requests_;
+    std::vector<int> requests_per_thread_;
+    int partition_count_;
+    std::vector<std::unordered_set<Partition<T>*>> ckp_turns;
+
+    int n_checkpointers_;
 };
 
 };

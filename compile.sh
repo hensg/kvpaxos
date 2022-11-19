@@ -1,9 +1,13 @@
-git submodule update --init --recursive
-git pull --recurse-submodules
-cd deps/libpaxos
-git checkout master
-cd ../../
-mkdir build
+#git submodule update --init --recursive
+#git pull --recurse-submodules
+#cd deps/libpaxos
+#git checkout master
+# cd ../../
+
+mkdir -p build
 cd build
-cmake ..
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+#cmake ..
+cmake -DCMAKE_BUILD_TYPE=Release ..
 make

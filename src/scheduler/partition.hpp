@@ -4,6 +4,9 @@
 
 #include <arpa/inet.h>
 #include <chrono>
+#include <condition_variable>
+#include <exception>
+#include <ostream>
 #include <pthread.h>
 #include <queue>
 #include <iterator>
@@ -20,11 +23,13 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <fstream>
 
 #include "graph/graph.hpp"
 #include "request/request.hpp"
 #include "storage/storage.h"
 #include "types/types.h"
+#include "checkpointer.hpp"
 
 
 namespace kvpaxos {
@@ -53,7 +58,6 @@ public:
             if (request.type() != WRITE) {
                 continue;
             }
-
             storage_.write(request.key(), request.args());
         }
     }
@@ -145,6 +149,10 @@ private:
             auto key = request.key;
             auto request_args = std::string(request.args);
 
+            if (key != 0) {
+                partition_used_keys_.emplace(key); 
+            }
+
             std::string answer;
             switch (type)
             {
@@ -188,8 +196,16 @@ private:
             }
 
             case ERROR:
+            {
                 answer = "ERROR";
                 break;
+            }
+            case CHECKPOINT:
+            {
+                checkpointer_.make_checkpoint(storage_, partition_used_keys_);
+                partition_used_keys_.clear();
+                break;
+            }
             default:
                 break;
             }
@@ -205,14 +221,21 @@ private:
     int id_, socket_fd_, n_executed_requests_;
     static kvstorage::Storage storage_;
 
+    checkpoint::Checkpointer<T> checkpointer_;
+
     bool executing_;
     std::thread worker_thread_;
     sem_t semaphore_;
     std::queue<struct client_message> requests_queue_;
     std::mutex queue_mutex_;
 
+    std::condition_variable cond_not_full;
+    std::mutex mtx_not_full;
+
     int total_weight_ = 0;
     std::unordered_map<T, int> weight_;
+
+    std::unordered_set<int> partition_used_keys_;
 };
 
 template<typename T>

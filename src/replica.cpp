@@ -63,6 +63,7 @@ metrics_loop(int sleep_duration, int n_requests, kvpaxos::Scheduler<int>* schedu
 {
 	auto already_counted_throughput = 0;
 	auto counter = 0;
+  std::cout << "time,requests" << std::endl;
 	while (RUNNING) {
 		std::this_thread::sleep_for(std::chrono::seconds(sleep_duration));
 		auto executed_requests = scheduler->n_executed_requests();
@@ -72,7 +73,7 @@ metrics_loop(int sleep_duration, int n_requests, kvpaxos::Scheduler<int>* schedu
 		already_counted_throughput += throughput;
 		counter++;
 
-		if (executed_requests == n_requests) {
+		if (executed_requests >= n_requests) {
 			break;
 		}
 	}
@@ -95,15 +96,19 @@ initialize_scheduler(
 	auto repartition_interval = toml::find<int>(
 		config, "repartition_interval"
 	);
+	auto n_checkpointers = toml::find<int>(
+		config, "n_checkpointers"
+	);
 	auto* scheduler = new kvpaxos::Scheduler<int>(
 		n_requests, repartition_interval, n_partitions,
-		repartition_method
+        n_checkpointers, repartition_method
 	);
 
 	auto n_initial_keys = toml::find<int>(
 		config, "n_initial_keys"
 	);
 	std::vector<workload::Request> populate_requests;
+    populate_requests.reserve(n_initial_keys);
 	for (auto i = 0; i <= n_initial_keys; i++) {
 		populate_requests.emplace_back(WRITE, i, "");
 	}
@@ -150,6 +155,7 @@ execute_requests(
 	}
 }
 
+
 std::unordered_map<int, time_point>
 join_maps(std::vector<std::unordered_map<int, time_point>> maps) {
 	std::unordered_map<int, time_point> joined_map;
@@ -159,13 +165,22 @@ join_maps(std::vector<std::unordered_map<int, time_point>> maps) {
 	return joined_map;
 }
 
+bool cmp(const checkpoint::checkpoint_times& a, const checkpoint::checkpoint_times& b) {
+  if (a.count < b.count)
+    return true;
+  if (a.count == b.count) {
+    return a.partition_id < b.partition_id;
+  }
+  return false;
+}
+
 static void
 run(const toml_config& config)
 {
 	auto requests_path = toml::find<std::string>(
 		config, "requests_path"
 	);
-	auto requests = std::move(workload::import_cs_requests(requests_path));
+  auto requests = std::move(workload::import_cs_requests(requests_path));
 	auto* scheduler = initialize_scheduler(requests.size(), config);
 
 	auto throughput_thread = std::thread(
@@ -192,6 +207,47 @@ run(const toml_config& config)
 		std::cout << (repartition_time - start_execution_timestamp).count() << " ";
 	}
 	std::cout << std::endl;
+
+  std::flush(std::cout);
+
+  auto& partitions = scheduler->get_partitions();
+  std::cout << "Checkpoint times:" << std::endl;
+  std::cout << "ckp,partition,start-time,end-time,elapsed-time,size,log_size,n_keys" << std::endl;
+
+  //for (auto& p: partitions) {
+  //  for (auto& t: p.second->get_checkpoint_times()) {
+  //      std::cout << t.count << "," 
+  //        << t.partition_id << ","
+  //        << t.start_time << ","
+  //        << t.end_time << ","
+  //        << t.time_taken << ","
+  //        << t.size << ","
+  //        << t.log_size << "," 
+  //        << t.num_keys << std::endl;
+  //  }
+  //}
+
+  auto& csb_requests = scheduler->get_crossborder_requests();
+  std::cout << "Crossborder requests executed:" << std::endl;
+  std::cout << "num_partitions,num_requests" << std::endl;
+  for (int i = 1; i < csb_requests.size(); i++) {
+    std::cout << i << "," << csb_requests.at(i) << std::endl;
+  }
+
+  auto& reqs_by_thread = scheduler->get_requests_per_thread();
+  std::cout << "Requests per thread executed:" << std::endl;
+  std::cout << "thread,num_requests" << std::endl;
+  for (int i = 0; i < reqs_by_thread.size(); i++) {
+    std::cout << i << "," << reqs_by_thread.at(i) << std::endl;
+  }
+
+  std::cout << "Checkpoint turns:" << std::endl;
+  for (auto& ckp_turn: scheduler->get_ckp_turns()) {
+    for (auto& p: ckp_turn) {
+      std::cout << p->id() << ",";
+    }
+    std::cout << std::endl;
+  }
 }
 
 static void

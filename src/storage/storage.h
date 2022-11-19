@@ -21,6 +21,8 @@ public:
     void write(int key, const std::string& value);
     std::vector<std::string> scan(int start, int length);
 
+    tbb::concurrent_unordered_map<int, std::string>& get_storage();
+
 private:
     tbb::concurrent_unordered_map<int, std::string> storage_;
 };

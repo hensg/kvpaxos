@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iostream>
 #include <functional>
 #include <random>
 #include <sstream>
@@ -16,6 +17,8 @@
 namespace workload {
 
 typedef toml::basic_value<toml::discard_comments, std::unordered_map> toml_config;
+
+Request make_request(char* type_buffer, char* key_buffer, char* arg_buffer);
 
 std::vector<Request> import_requests(const std::string& file_path, const std::string& field);
 std::vector<Request> import_cs_requests(const std::string& file_path);

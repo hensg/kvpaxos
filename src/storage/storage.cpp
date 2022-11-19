@@ -32,4 +32,8 @@ std::vector<std::string> Storage::scan(int start, int length) {
     return values;
 }
 
+tbb::concurrent_unordered_map<int, std::string>& Storage::get_storage() {
+  return storage_;
+}
+
 };

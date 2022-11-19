@@ -1,11 +1,14 @@
 #include "request_generation.h"
+#include "types/types.h"
+#include <exception>
+#include <fstream>
 
 
 namespace workload {
 
 Request make_request(char* type_buffer, char* key_buffer, char* arg_buffer) {
     auto type = static_cast<request_type>(std::stoi(type_buffer));
-    auto key = std::stoi(key_buffer);
+    auto key = std::stol(key_buffer);
     auto arg = std::string(arg_buffer);
 
     return Request(type, key, arg);
@@ -50,6 +53,52 @@ std::vector<Request> import_cs_requests(const std::string& file_path)
     } else {
         std::cerr << "Arquivo não encontrado ou falha ao abrir o arquivo!" << std::endl;
         exit(1);
+    }
+    return requests;
+}
+
+std::vector<Request> import_cs_requests2(const std::string& file_path)
+{
+    std::ifstream infile(file_path);
+
+    std::vector<Request> requests;
+    std::string line;
+    char type_buffer[2];
+    char key_buffer[20];
+    char arg_buffer[129];
+    auto* reading_buffer = type_buffer;
+    auto buffer_index = 0;
+    if (infile.is_open()) {
+        while (std::getline(infile, line)) {
+            for (auto& character: line) {
+                if (character == ',') {
+                    reading_buffer[buffer_index] = '\0';
+                    if (reading_buffer == type_buffer) {
+                        reading_buffer = key_buffer;
+                    } else if (reading_buffer == key_buffer) {
+                        reading_buffer = arg_buffer;
+                    } else {
+                        reading_buffer = type_buffer;
+                    }
+                    buffer_index = 0;
+                } else {
+                    reading_buffer[buffer_index] = character;
+                    buffer_index++;
+                }
+            }
+            requests.emplace_back(make_request(
+                type_buffer,
+                key_buffer,
+                arg_buffer
+            ));
+        }
+        infile.close();
+    } else {
+        std::cerr << "Arquivo não encontrado ou falha ao abrir o arquivo!" << std::endl;
+        exit(1);
+    }
+    for (int i = 0; i < 10; i++) {
+      std::cout << requests.at(i).args() << std::endl;
     }
     return requests;
 }

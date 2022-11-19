@@ -42,7 +42,8 @@ enum request_type
 	WRITE,
 	SCAN,
 	SYNC,
-	ERROR
+	ERROR,
+  CHECKPOINT
 };
 
 #endif
