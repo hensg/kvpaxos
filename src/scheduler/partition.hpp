@@ -37,12 +37,21 @@ namespace kvpaxos {
 template <typename T>
 class Partition {
 public:
-    Partition(int id)
-        : id_{id},
-          n_executed_requests_{0},
-          executing_{true}
-    {
+    Partition(std::shared_ptr<kvstorage::Storage> storage, int id, checkpoint::Checkpointer<T>* checkpointer) {
+        checkpointer_ = checkpointer;
+        storage_ = storage;
+        id_ = id;
         socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+        n_executed_requests_ = 0;
+        executing_ = true;
+    }
+
+    Partition(std::shared_ptr<kvstorage::Storage> storage, int id) {
+        storage_ = storage;
+        id_ = id;
+        socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+        n_executed_requests_ = 0;
+        executing_ = true;
     }
 
     ~Partition() {
@@ -51,15 +60,7 @@ public:
             sem_post(&semaphore_);
             worker_thread_.join();
         }
-    }
-
-    static void populate_storage(const std::vector<workload::Request>& requests) {
-        for (auto& request : requests) {
-            if (request.type() != WRITE) {
-                continue;
-            }
-            storage_.write(request.key(), request.args());
-        }
+        delete checkpointer_;
     }
 
     void start_worker_thread() {
@@ -143,28 +144,27 @@ private:
             queue_mutex_.lock();
                 auto request = std::move(requests_queue_.front());
                 requests_queue_.pop();
+                if (request.type == WRITE || request.type == READ) {
+                    partition_used_keys_.emplace(request.key); 
+                }
             queue_mutex_.unlock();
 
-            auto type = static_cast<request_type>(request.type);
             auto key = request.key;
+            auto type = static_cast<request_type>(request.type);
             auto request_args = std::string(request.args);
-
-            if (key != 0) {
-                partition_used_keys_.emplace(key); 
-            }
 
             std::string answer;
             switch (type)
             {
             case READ:
             {
-                answer = std::move(storage_.read(key));
+                answer = std::move(storage_->read(key));
                 break;
             }
 
             case WRITE:
             {
-                storage_.write(key, request_args);
+                storage_->write(key, request_args);
                 answer = request_args;
                 break;
             }
@@ -172,8 +172,9 @@ private:
             case SCAN:
             {
                 auto length = std::stoi(request_args);
-                auto values = std::move(storage_.scan(key, length));
-
+                auto values = std::move(storage_->scan(key, length));
+                for (auto i = 0; i < length; i++)
+                  partition_used_keys_.emplace(request.key + i); 
 
                 std::ostringstream oss;
                 std::copy(values.begin(), values.end(), std::ostream_iterator<std::string>(oss, ","));
@@ -195,15 +196,20 @@ private:
                 break;
             }
 
+            case CHECKPOINT:
+            {
+                std::unique_lock lk(queue_mutex_);
+                std::condition_variable* cv = new std::condition_variable();
+                checkpointer_->time_for_checkpoint(partition_used_keys_, cv);
+                cv->wait(lk);
+                delete cv;
+                partition_used_keys_.clear();
+                break;
+            }
+
             case ERROR:
             {
                 answer = "ERROR";
-                break;
-            }
-            case CHECKPOINT:
-            {
-                checkpointer_.make_checkpoint(storage_, partition_used_keys_);
-                partition_used_keys_.clear();
                 break;
             }
             default:
@@ -219,9 +225,8 @@ private:
     }
 
     int id_, socket_fd_, n_executed_requests_;
-    static kvstorage::Storage storage_;
 
-    checkpoint::Checkpointer<T> checkpointer_;
+    std::shared_ptr<kvstorage::Storage> storage_;
 
     bool executing_;
     std::thread worker_thread_;
@@ -229,17 +234,13 @@ private:
     std::queue<struct client_message> requests_queue_;
     std::mutex queue_mutex_;
 
-    std::condition_variable cond_not_full;
-    std::mutex mtx_not_full;
+    checkpoint::Checkpointer<T>* checkpointer_;
 
     int total_weight_ = 0;
     std::unordered_map<T, int> weight_;
 
     std::unordered_set<int> partition_used_keys_;
 };
-
-template<typename T>
-kvstorage::Storage Partition<T>::storage_;
 
 }
 

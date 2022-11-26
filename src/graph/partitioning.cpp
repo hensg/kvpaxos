@@ -76,6 +76,26 @@ std::vector<int> multilevel_cut(
     int n_vertex = vertice_weight.size();
     auto vertex_partitions = std::vector<int>(n_vertex, 0);
     if (cut_method == METIS) {
+        std::cout << "n_vertex: " << n_vertex << std::endl;
+        std::cout << "x_edges: ";
+        for (auto& xe: x_edges)
+            std::cout << xe << ",";
+        std::cout << std::endl << "edges: ";
+        for (auto& x: edges)
+            std::cout << x << ",";
+        std::cout << std::endl << "vweights: ";
+        for (auto& x: vertice_weight)
+            std::cout << x << ",";
+        std::cout << std::endl << "eweights: ";
+        for (auto& x: edges_weight)
+            std::cout << x << ",";
+        std::cout << std::endl << "vertex_partitions: ";
+        for (auto& x: vertex_partitions)
+            std::cout << x << ",";
+        std::cout << std::endl;
+        std::cout << "edges_size: " << edges.size() << std::endl;
+        std::flush(std::cout);
+
         METIS_PartGraphKway(
             &n_vertex, &n_constrains, x_edges.data(), edges.data(),
             vertice_weight.data(), NULL, edges_weight.data(), &n_partitions, NULL,
@@ -90,6 +110,8 @@ std::vector<int> multilevel_cut(
             vertex_partitions.data()
         );
     }
+    std::cout << "Passou" << std::endl;
+    std::flush(std::cout);
 
     return vertex_partitions;
 }

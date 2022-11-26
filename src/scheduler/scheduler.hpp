@@ -9,6 +9,8 @@
 #include <queue>
 #include <semaphore.h>
 #include <shared_mutex>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string.h>
 #include <thread>
@@ -34,20 +36,32 @@ public:
                 int repartition_interval,
                 int n_partitions,
                 int n_checkpointers,
-                model::CutMethod repartition_method
-    ) : n_partitions_{n_partitions},
+                model::CutMethod repartition_method,
+                std::shared_ptr<kvstorage::Storage> storage
+    ) : storage_{storage},
+        n_partitions_{n_partitions},
         repartition_interval_{repartition_interval},
         repartition_method_{repartition_method},
         n_checkpointers_{n_checkpointers}
     {
         partition_count_ = 0;
+        checkpointers_ = std::vector<checkpoint::Checkpointer<T>*>();
+        for (auto i = 0; i < n_checkpointers; i++) {
+            auto* ckp = new checkpoint::Checkpointer<T>(storage, i, n_partitions_ / n_checkpointers_);
+            checkpointers_.push_back(ckp);
+        }
         for (auto i = 0; i < n_partitions_; i++) {
-            auto* partition = new Partition<T>(i);
+            Partition<T>* partition;
+            if (n_checkpointers == 0) {
+                partition = new Partition<T>(storage, i);
+            } else {
+                partition = new Partition<T>(storage, i, checkpointers_[i % n_checkpointers_]);
+            }
             partitions_.emplace(i, partition);
             partitions_to_checkpoint_.emplace(i);
-            crossborder_requests_.push_back(0);
-            requests_per_thread_.push_back(0);
         }
+        crossborder_requests_ = std::vector<int>(n_partitions, 0);
+        requests_per_thread_ = std::vector<int>(n_partitions, 0);
         for (auto i = 0; i < n_partitions_; i++) {
           for (auto j = 0; j < n_partitions_; j++) {
             conflict_matrix_[i][j] = 0;
@@ -67,11 +81,15 @@ public:
         }
         delete data_to_partition_;
     }
+
     void process_populate_requests(const std::vector<workload::Request>& requests) {
         for (auto& request : requests) {
             add_key(request.key());
+            if (request.type() == WRITE) {
+                continue;
+            }
+            storage_->write(request.key(), request.args());
         }
-        Partition<T>::populate_storage(requests);
     }
 
     void run() {
@@ -105,6 +123,8 @@ public:
         return requests_per_thread_;
     }
 
+    int count = 0;
+
     void schedule_and_answer(struct client_message& request) {
         auto type = static_cast<request_type>(request.type);
         if (type == SYNC) {
@@ -119,30 +139,35 @@ public:
 
         auto partitions = std::move(involved_partitions(request));
         crossborder_requests_[partitions.size()]++;
-
         if (partitions.empty()) {
-            request.type = ERROR;
-            return partitions_.at(0)->push_request(request);
+            std::stringstream ss;
+            ss << "No partitions for this request! request: "
+                << "id:" << request.id 
+                << ", type:" << request.type
+                << ", args:" << request.args 
+                << std::endl;
+            throw std::invalid_argument(ss.str());
         }
 
         auto arbitrary_partition = *begin(partitions);
+        requests_per_thread_[arbitrary_partition->id()]++;
+
         if (partitions.size() > 1) {
             sync_partitions(partitions);
             arbitrary_partition->push_request(request);
             sync_partitions(partitions);
-
-            for (auto& p: partitions) {
-                for (auto& p2: partitions) {
-                    conflict_matrix_[p->id()][p2->id()] = 1;
-                }
-            }
         } else {
-            conflict_matrix_[arbitrary_partition->id()][arbitrary_partition->id()] = 1;
             arbitrary_partition->push_request(request);
         }
 
-        requests_per_thread_[arbitrary_partition->id()]++;
         n_dispatched_requests_++;
+
+        if (
+            n_dispatched_requests_ % repartition_interval_ == 0 
+            && n_dispatched_requests_ > 0 && n_checkpointers_ > 0
+        ) {
+            send_checkpoint_requests();
+        }
 
         if (repartition_method_ != model::ROUND_ROBIN) {
             graph_requests_mutex_.lock();
@@ -167,60 +192,28 @@ public:
             }
         }
 
-        if (
-            n_dispatched_requests_ % repartition_interval_ == 0
-        ) {
-            //std::cout << "Partitions Before: [";
-            //for (auto& p : partitions_to_checkpoint_) {
-            //    std::cout << p << ",";
-            //}
-            //std::cout << "]" << std::endl;
-            struct client_message checkpoint_message; 
-            checkpoint_message.type = CHECKPOINT;
-            const int partition_id = *partitions_to_checkpoint_.begin();
-
-            std::unordered_set<Partition<T>*> partitions_turn;
-            for (int i = 0; i < n_partitions_; i++) {
-                if (conflict_matrix_[partition_id][i] == 1) {
-                    partitions_turn.emplace(partitions_.at(i));
-                    partitions_to_checkpoint_.erase(i);
-                    conflict_matrix_[partition_id][i] = 0;
-                    for (int k = 0; k < n_partitions_; k++) {
-                        if (k != i && conflict_matrix_[i][k] == 1) {
-                            partitions_turn.emplace(partitions_.at(i));
-                            conflict_matrix_[i][k] = 0;
-                        }
-                    }
-                }
-            }
-            sync_partitions(partitions_turn);
-            for (auto& p: partitions_turn) {
-                p->push_request(checkpoint_message);
-            }
-            ckp_turns.push_back(partitions_turn);
-            sync_partitions(partitions_turn);
-            if (partitions_to_checkpoint_.size() == 0) {
-                //std::cout << "Rebuind partitions for checkpointing\n";
-                for (int i = 0; i < n_partitions_; i++) {
-                    partitions_to_checkpoint_.emplace(i);
-                    for (auto j = 0; j < n_partitions_; j++) {
-                      conflict_matrix_[i][j] = 0;
-                    }
-                }
-            }
-            //std::cout << "Partitions now: [";
-            //for (auto& p : partitions_to_checkpoint_) {
-            //    std::cout << p << ",";
-            //}
-            //std::cout << "]" << std::endl;
-        }
     }
 
     std::vector<std::unordered_set<Partition<T>*>>& get_ckp_turns() {
         return ckp_turns;
     }
 
+    std::vector<checkpoint::Checkpointer<T>*> get_checkpointers() {
+        return checkpointers_;
+    }
+
 private:
+
+    void send_checkpoint_requests() {
+        struct client_message checkpoint_message; 
+        checkpoint_message.key = 0;
+        checkpoint_message.type = CHECKPOINT;
+        checkpoint_message.args[0] = '\0';
+        for (auto& p: partitions_) {
+            p.second->push_request(checkpoint_message);
+        }
+    }
+
     std::unordered_set<Partition<T>*> involved_partitions(
         const struct client_message& request)
     {
@@ -234,13 +227,13 @@ private:
 
         for (auto i = 0; i < range; i++) {
             if (not mapped(request.key + i)) {
+                throw std::invalid_argument("missing key partition, key: " + std::to_string(request.key));
                 return std::unordered_set<Partition<T>*>();
             }
 
             partitions.insert(data_to_partition_->at(request.key + i));
         }
 
-        
         return partitions;
     }
 
@@ -384,7 +377,6 @@ private:
     int round_robin_counter_ = 0;
     int sync_counter_ = 0;
     long n_dispatched_requests_ = 0;
-    kvstorage::Storage storage_;
     std::unordered_map<int, Partition<T>*> partitions_;
     std::unordered_map<T, Partition<T>*>* data_to_partition_;
     std::unordered_map<T, Partition<T>*> data_to_partition_copy_;
@@ -410,7 +402,12 @@ private:
     std::vector<std::unordered_set<Partition<T>*>> ckp_turns;
 
     int n_checkpointers_;
+    std::vector<checkpoint::Checkpointer<T>*> checkpointers_;
+
+    std::shared_ptr<kvstorage::Storage> storage_;
+    std::mutex mutex_;
 };
+
 
 };
 

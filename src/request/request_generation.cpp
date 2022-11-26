@@ -2,6 +2,7 @@
 #include "types/types.h"
 #include <exception>
 #include <fstream>
+#include <string>
 
 
 namespace workload {

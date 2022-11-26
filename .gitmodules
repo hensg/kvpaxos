@@ -7,3 +7,6 @@
 [submodule "deps/METIS"]
 	path = deps/METIS
 	url = https://github.com/KarypisLab/METIS.git
+[submodule "deps/GKlib"]
+	path = deps/GKlib
+	url = https://github.com/KarypisLab/GKlib
