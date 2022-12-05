@@ -144,9 +144,6 @@ private:
             queue_mutex_.lock();
                 auto request = std::move(requests_queue_.front());
                 requests_queue_.pop();
-                if (request.type == WRITE || request.type == READ) {
-                    partition_used_keys_.emplace(request.key); 
-                }
             queue_mutex_.unlock();
 
             auto key = request.key;
@@ -173,8 +170,6 @@ private:
             {
                 auto length = std::stoi(request_args);
                 auto values = std::move(storage_->scan(key, length));
-                for (auto i = 0; i < length; i++)
-                  partition_used_keys_.emplace(request.key + i); 
 
                 std::ostringstream oss;
                 std::copy(values.begin(), values.end(), std::ostream_iterator<std::string>(oss, ","));
@@ -198,29 +193,34 @@ private:
 
             case CHECKPOINT:
             {
+                //if (request.keys.size() > 0) {
+                //    std::stringstream ss;
+                //    ss << id_ << " -> ";
+                //    for (auto& k: request.keys) {
+                //        ss << k << ",";
+                //    }
+                //    ss << std::endl;
+                //    std::cout << ss.str();
+                //}
                 std::unique_lock lk(queue_mutex_);
-                std::condition_variable* cv = new std::condition_variable();
-                checkpointer_->time_for_checkpoint(partition_used_keys_, cv);
+                std::shared_ptr<std::condition_variable> cv = std::make_shared<std::condition_variable>();
+                checkpointer_->time_for_checkpoint(request.keys, cv);
                 cv->wait(lk);
-                delete cv;
-                partition_used_keys_.clear();
                 break;
             }
 
             case ERROR:
             {
                 answer = "ERROR";
-                break;
+                exit(1);
             }
             default:
                 break;
             }
 
-            if (type == SYNC) {
-                continue;
+            if (type == WRITE || type == READ || type == SCAN) {
+                n_executed_requests_++;
             }
-
-            n_executed_requests_++;
         }
     }
 
@@ -239,7 +239,6 @@ private:
     int total_weight_ = 0;
     std::unordered_map<T, int> weight_;
 
-    std::unordered_set<int> partition_used_keys_;
 };
 
 }

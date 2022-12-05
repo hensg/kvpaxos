@@ -4,6 +4,7 @@
 
 #include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <queue>
@@ -69,10 +70,18 @@ public:
         }
       
         data_to_partition_ = new std::unordered_map<T, Partition<T>*>();
+        partition_to_data_ = new std::unordered_map<Partition<T>*, std::vector<int>>();
+        for (int i = 0; i < partitions_.size(); i++) {
+            std::vector<int> new_vec;
+           partition_to_data_->emplace(partitions_.at(i), new_vec);
+        }
 
-        sem_init(&graph_requests_semaphore_, 0, 0);
-        pthread_barrier_init(&repartition_barrier_, NULL, 2);
-        graph_thread_ = std::thread(&Scheduler<T>::update_graph_loop, this);
+        if (repartition_method_ != model::ROUND_ROBIN) {
+            sem_init(&graph_requests_semaphore_, 0, 0);
+            pthread_barrier_init(&repartition_barrier_, NULL, 2);
+            graph_thread_ = std::thread(&Scheduler<T>::update_graph_loop, this);
+        }
+        //graph_queue_size_printer_ = std::thread(&Scheduler<T>::graph_loop_size_printer, this);
     }
 
     ~Scheduler() {
@@ -80,15 +89,27 @@ public:
             delete partition;
         }
         delete data_to_partition_;
+        delete partition_to_data_;
     }
 
     void process_populate_requests(const std::vector<workload::Request>& requests) {
-        for (auto& request : requests) {
-            add_key(request.key());
-            if (request.type() == WRITE) {
-                continue;
+        for (auto& r : requests) {
+            if (not mapped(r.key())) {
+                add_key(r.key());
+                storage_->write(r.key(), r.args());
+                if (r.type() == SCAN) {
+                    for (int i = 0; i < static_cast<int>(std::stoi(r.args())); i++) {
+                      if (!storage_->contains_key(r.key()))
+                          storage_->write(r.key(), r.args());
+                    }
+                }
             }
-            storage_->write(request.key(), request.args());
+        }
+        if (repartition_method_ != model::ROUND_ROBIN) {
+          std::unique_lock lk(mutex_);
+          graph_queue_empty_.wait(lk, [this] {
+              return graph_requests_queue_.size() == 0;
+          });
         }
     }
 
@@ -161,15 +182,13 @@ public:
         }
 
         n_dispatched_requests_++;
-
-        if (
-            n_dispatched_requests_ % repartition_interval_ == 0 
-            && n_dispatched_requests_ > 0 && n_checkpointers_ > 0
-        ) {
+        bool time_for_checkpoint = n_dispatched_requests_ % repartition_interval_ == 0;
+        if (time_for_checkpoint && n_checkpointers_ > 0) {
             send_checkpoint_requests();
         }
 
         if (repartition_method_ != model::ROUND_ROBIN) {
+            //std::cout << "repartitioning" << std::endl;
             graph_requests_mutex_.lock();
                 graph_requests_queue_.push(request);
             graph_requests_mutex_.unlock();
@@ -177,21 +196,26 @@ public:
 
             if (
                 n_dispatched_requests_ % repartition_interval_ == 0
+                && n_dispatched_requests_ > 0
             ) {
                 struct client_message sync_message;
                 sync_message.type = SYNC;
 
+                //std::cout << "locking..." << std::endl;
                 graph_requests_mutex_.lock();
                     graph_requests_queue_.push(sync_message);
                 graph_requests_mutex_.unlock();
                 sem_post(&graph_requests_semaphore_);
 
+                //std::cout << "waiting..." << std::endl;
                 pthread_barrier_wait(&repartition_barrier_);
+                //std::cout << "repartitioning..." << std::endl;
                 repartition_data();
-                sync_all_partitions();
             }
         }
-
+        if (time_for_checkpoint && n_checkpointers_ > 0) {
+            sync_all_partitions();
+        }
     }
 
     std::vector<std::unordered_set<Partition<T>*>>& get_ckp_turns() {
@@ -205,12 +229,31 @@ public:
 private:
 
     void send_checkpoint_requests() {
-        struct client_message checkpoint_message; 
-        checkpoint_message.key = 0;
-        checkpoint_message.type = CHECKPOINT;
-        checkpoint_message.args[0] = '\0';
-        for (auto& p: partitions_) {
-            p.second->push_request(checkpoint_message);
+        //std::cout << "SENDING CHECKPOINT" << std::endl;
+        for (int i = 0; i < partitions_.size(); i++) {
+            Partition<T>* p = partitions_.at(i);
+            struct client_message checkpoint_message; 
+            checkpoint_message.key = 0;
+            checkpoint_message.type = CHECKPOINT;
+            checkpoint_message.keys = partition_to_data_->at(p);
+            //std::stringstream ss;
+            //ss << p << " -> ";
+            //for (auto k: checkpoint_message.keys) {
+            //    ss << k << ",";
+            //}
+            //ss << std::endl;
+            //std::cout << ss.str();
+            p->push_request(checkpoint_message);
+        }
+    }
+
+    void graph_loop_size_printer() {
+        using namespace std::chrono_literals;
+        while (true) {
+            std::stringstream ss;
+            ss << "Graph queue has: " << graph_requests_queue_.size() << std::endl;
+            std::cout << ss.str();
+            std::this_thread::sleep_for(1s);
         }
     }
 
@@ -227,7 +270,6 @@ private:
 
         for (auto i = 0; i < range; i++) {
             if (not mapped(request.key + i)) {
-                throw std::invalid_argument("missing key partition, key: " + std::to_string(request.key));
                 return std::unordered_set<Partition<T>*>();
             }
 
@@ -270,7 +312,9 @@ private:
 
     void add_key(T key) {
         auto partition_id = round_robin_counter_;
-        data_to_partition_->emplace(key, partitions_.at(partition_id));
+        Partition<T>* p = partitions_.at(partition_id);
+        data_to_partition_->emplace(key, p);
+        partition_to_data_->at(p).push_back(key);
 
         round_robin_counter_ = (round_robin_counter_+1) % n_partitions_;
 
@@ -301,6 +345,7 @@ private:
             graph_requests_mutex_.unlock();
 
             if (request.type == SYNC) {
+                //std::cout << "wait inside graph loop" << std::endl;
                 pthread_barrier_wait(&repartition_barrier_);
             } else {
                 if (request.type == WRITE and request.sin_port == 1) {
@@ -310,6 +355,9 @@ private:
                 }
                 update_graph(request);
             }
+
+            if (graph_requests_queue_.size() == 0)
+                graph_queue_empty_.notify_one();
         }
     }
 
@@ -356,6 +404,16 @@ private:
         );
         delete data_to_partition_;
         data_to_partition_ = new std::unordered_map<T, Partition<T>*>();
+
+
+        delete partition_to_data_;
+        partition_to_data_ = new std::unordered_map<Partition<T>*, std::vector<int>>();
+        //std::cout << "Repartitioning..." << std::endl;
+        for (int i = 0; i < partitions_.size(); i++) {
+            Partition<T>* p = partitions_.at(i);
+            std::vector<int> new_vec;
+            partition_to_data_->emplace(p, new_vec);
+        }
         auto sorted_vertex = std::move(workload_graph_.sorted_vertex());
         for (auto i = 0; i < partition_scheme.size(); i++) {
             auto partition = partition_scheme[i];
@@ -365,9 +423,11 @@ private:
             }
             auto data = sorted_vertex[i];
             data_to_partition_->emplace(data, partitions_.at(partition));
+            partition_to_data_->at(partitions_.at(partition)).push_back(data);
         }
 
         data_to_partition_copy_ = *data_to_partition_;
+        partition_to_data_copy_ = *partition_to_data_;
         if (first_repartition) {
             first_repartition = false;
         }
@@ -381,10 +441,14 @@ private:
     std::unordered_map<T, Partition<T>*>* data_to_partition_;
     std::unordered_map<T, Partition<T>*> data_to_partition_copy_;
 
+    std::unordered_map<Partition<T>*, std::vector<int>>* partition_to_data_;
+    std::unordered_map<Partition<T>*, std::vector<int>> partition_to_data_copy_;
+
     int conflict_matrix_[32][32];
     std::unordered_set<int> partitions_to_checkpoint_;
 
     std::thread graph_thread_;
+    std::thread graph_queue_size_printer_;
     std::queue<struct client_message> graph_requests_queue_;
     sem_t graph_requests_semaphore_;
     std::mutex graph_requests_mutex_;
@@ -395,6 +459,8 @@ private:
     long repartition_interval_;
     bool first_repartition = true;
     pthread_barrier_t repartition_barrier_;
+
+    std::condition_variable graph_queue_empty_;
 
     std::vector<int> crossborder_requests_;
     std::vector<int> requests_per_thread_;

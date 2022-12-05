@@ -33,6 +33,7 @@ struct client_message {
 	bool record_timestamp;
 	char args[4];
 	size_t size;
+  std::vector<int> keys;
 };
 typedef struct client_message client_message;
 

@@ -6,6 +6,9 @@ namespace kvstorage {
 int VALUE_SIZE = 4096;
 std::string template_value(VALUE_SIZE, '*');
 
+bool Storage::contains_key(const int &key) {
+    return storage_.find(key) != storage_.end();
+}
 
 std::string Storage::read(int key) const {
     try {

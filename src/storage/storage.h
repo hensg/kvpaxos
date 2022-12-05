@@ -20,6 +20,7 @@ public:
     std::string read(int key) const;
     void write(int key, const std::string& value);
     std::vector<std::string> scan(int start, int length);
+    bool contains_key(const int& key);
 
     tbb::concurrent_unordered_map<int, std::string>& get_storage();
 
