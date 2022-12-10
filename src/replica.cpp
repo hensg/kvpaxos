@@ -92,7 +92,7 @@ initialize_scheduler(std::vector<workload::Request> &requests,
 
   auto n_initial_keys = toml::find<int>(config, "n_initial_keys");
 
-  scheduler->process_populate_requests(requests);
+  scheduler->process_populate_requests(n_initial_keys);
 
   scheduler->run();
   return scheduler;
@@ -159,7 +159,8 @@ static void run(const toml_config &config) {
   auto end_execution_timestamp = std::chrono::system_clock::now();
 
   auto makespan = end_execution_timestamp - start_execution_timestamp;
-  std::cout << "Makespan: " << makespan.count() << "\n";
+  std::cout << "Makespan" << std::endl;
+  std::cout << makespan.count() << std::endl;
 
   auto &repartition_times = scheduler->repartition_timestamps();
   std::cout << "Repartition at: ";
@@ -171,19 +172,52 @@ static void run(const toml_config &config) {
   std::flush(std::cout);
 
   auto &partitions = scheduler->get_partitions();
-  std::cout << "Checkpoint times:" << std::endl;
-  std::cout
-      << "ckp,partition,start-time,end-time,elapsed-time,size,log_size,n_keys"
-      << std::endl;
 
   auto checkpointers = scheduler->get_checkpointers();
+  auto checkpoint_times = std::vector<checkpoint::checkpoint_times>();
   for (auto &ckp : checkpointers) {
     for (auto &t : ckp->get_checkpoint_times()) {
+      checkpoint_times.push_back(t);
+    }
+  }
+  auto checkpoint_avg_elapsed_time = std::unordered_map<int, long>();
+  auto checkpoint_avg_size = std::unordered_map<int, long>();
+  auto num_of_checkpoints = 0;
+  std::cout << "Checkpoint times raw:" << std::endl;
+  for (auto& t : checkpoint_times) {
+      if (t.count > num_of_checkpoints)
+        num_of_checkpoints = t.count;
+
       std::cout << t.count << "," << t.partition_id << "," << t.start_time
                 << "," << t.end_time << "," << t.time_taken << "," << t.size
                 << "," << t.log_size << "," << t.num_keys << std::endl;
-    }
+
+      if (checkpoint_avg_elapsed_time.find(t.partition_id) == checkpoint_avg_elapsed_time.end()) {
+        checkpoint_avg_elapsed_time[t.partition_id] = t.time_taken;
+      } else {
+        checkpoint_avg_elapsed_time[t.partition_id] = checkpoint_avg_elapsed_time.at(t.partition_id) + t.time_taken;
+      }
+
+      if (checkpoint_avg_size.find(t.partition_id) == checkpoint_avg_size.end()) {
+        checkpoint_avg_size[t.partition_id] = t.size;
+      } else {
+        checkpoint_avg_size[t.partition_id] = checkpoint_avg_size.at(t.partition_id) + t.size;
+      }
   }
+
+  std::cout << "Checkpoint times:" << std::endl;
+  std::cout << "partition,avg-elapsed-time" << std::endl;
+  for (auto& elapsed_time: checkpoint_avg_elapsed_time) {
+    std::cout << elapsed_time.first << "," << elapsed_time.second/num_of_checkpoints << std::endl;
+  }
+  std::cout << std::endl;
+  std::cout << "Checkpoint sizes:" << std::endl;
+  std::cout << "partition,avg-size" << std::endl;
+  for (auto& size: checkpoint_avg_size) {
+    std::cout << size.first << "," << size.second/num_of_checkpoints << std::endl;
+  }
+  std::cout << std::endl;
+
 
   auto &csb_requests = scheduler->get_crossborder_requests();
   std::cout << "Crossborder requests executed:" << std::endl;

@@ -92,17 +92,11 @@ public:
         delete partition_to_data_;
     }
 
-    void process_populate_requests(const std::vector<workload::Request>& requests) {
-        for (auto& r : requests) {
-            if (not mapped(r.key())) {
-                add_key(r.key());
-                storage_->write(r.key(), r.args());
-                if (r.type() == SCAN) {
-                    for (int i = 0; i < static_cast<int>(std::stoi(r.args())); i++) {
-                      if (!storage_->contains_key(r.key()))
-                          storage_->write(r.key(), r.args());
-                    }
-                }
+    void process_populate_requests(const int n_initial_keys) {
+	    for (auto key = 0; key <= n_initial_keys; key++) {
+            if (!mapped(key)) {
+                add_key(key);
+                storage_->write(key, "");
             }
         }
         if (repartition_method_ != model::ROUND_ROBIN) {
@@ -171,7 +165,7 @@ public:
         }
 
         auto arbitrary_partition = *begin(partitions);
-        requests_per_thread_[arbitrary_partition->id()]++;
+        requests_per_thread_[data_to_partition_->at(request.key)->id()]++;
 
         if (partitions.size() > 1) {
             sync_partitions(partitions);
@@ -350,7 +344,7 @@ private:
             } else {
                 if (request.type == WRITE and request.sin_port == 1) {
                     auto partition = (Partition<T>*) request.s_addr;
-		            data_to_partition_copy_.emplace(request.key, partition);
+		            //data_to_partition_copy_.emplace(request.key, partition);
 		            partition->insert_data(request.key);
                 }
                 update_graph(request);
@@ -375,7 +369,7 @@ private:
             }
 
             workload_graph_.increase_vertice_weight(data[i]);
-            data_to_partition_copy_.at(data[i])->increase_weight(data[i]);
+            //data_to_partition_copy_.at(data[i])->increase_weight(data[i]);
             for (auto j = i+1; j < data.size(); j++) {
                 if (not workload_graph_.vertice_exists(data[j])) {
                     workload_graph_.add_vertice(data[j]);
@@ -426,8 +420,7 @@ private:
             partition_to_data_->at(partitions_.at(partition)).push_back(data);
         }
 
-        data_to_partition_copy_ = *data_to_partition_;
-        partition_to_data_copy_ = *partition_to_data_;
+        //data_to_partition_copy_ = *data_to_partition_;
         if (first_repartition) {
             first_repartition = false;
         }
@@ -442,7 +435,6 @@ private:
     std::unordered_map<T, Partition<T>*> data_to_partition_copy_;
 
     std::unordered_map<Partition<T>*, std::vector<int>>* partition_to_data_;
-    std::unordered_map<Partition<T>*, std::vector<int>> partition_to_data_copy_;
 
     int conflict_matrix_[32][32];
     std::unordered_set<int> partitions_to_checkpoint_;
