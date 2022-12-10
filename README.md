@@ -1,3 +1,8 @@
+# Experiment
+
+The YCSB workloads area available at: https://www.dropbox.com/sh/limwyl1no9qpc6w/AABOd6KmUyBYNWZEbHGL9-Gna?dl=0
+
+
 # KVPaxos
 
 KVPaxos is a key-value distributed storage system that uses Paxos and Parallel State Machine Replication to ensure consistency among replicas. It's developed as a prototype to measure latency and throughput when using state partitioning and balanced graph partitioning to schedule requests among threads, it includes 4 graph repartition algorithms to be used during execution: METIS, KaHIP, FENNEL and ReFENNEL.
