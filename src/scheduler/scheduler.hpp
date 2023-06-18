@@ -15,6 +15,7 @@
 #include <string>
 #include <string.h>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -122,7 +123,7 @@ public:
         return n_executed_requests;
     }
 
-    const std::vector<time_point>& repartition_timestamps() const {
+    const std::vector<std::tuple<time_point, time_point>>& repartition_timestamps() const {
         return repartition_timestamps_;
     }
 
@@ -385,7 +386,6 @@ private:
 
     void repartition_data() {
         auto start_timestamp = std::chrono::system_clock::now();
-        repartition_timestamps_.emplace_back(start_timestamp);
 
         auto partition_scheme = std::move(
             model::cut_graph(
@@ -424,6 +424,7 @@ private:
         if (first_repartition) {
             first_repartition = false;
         }
+        repartition_timestamps_.emplace_back(std::tuple(start_timestamp, std::chrono::system_clock::now()));
     }
 
     int n_partitions_;
@@ -445,7 +446,7 @@ private:
     sem_t graph_requests_semaphore_;
     std::mutex graph_requests_mutex_;
 
-    std::vector<time_point> repartition_timestamps_;
+    std::vector<std::tuple<time_point, time_point>> repartition_timestamps_;
     model::Graph<T> workload_graph_;
     model::CutMethod repartition_method_;
     long repartition_interval_;

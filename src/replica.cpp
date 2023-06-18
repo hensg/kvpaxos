@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -240,6 +241,26 @@ static void run(const toml_config &config) {
     }
     std::cout << std::endl;
   }
+
+  std::ofstream out("repartition_metrics.csv");
+  out << "start,end,timetaken" << std::endl;
+  for (auto &repartition_times : scheduler->repartition_timestamps()) {
+    out << (start_execution_timestamp - std::get<0>(repartition_times)).count()
+      << "," 
+      << (start_execution_timestamp - std::get<1>(repartition_times)).count()
+      << ","
+      << (std::get<1>(repartition_times) - std::get<0>(repartition_times)).count()
+      << std::endl;
+  }
+  out.close();
+
+  std::ofstream out_ckp("checkpoint_metrics.csv");
+  out_ckp << "count,id,start,end,timetaken" << std::endl;
+  for (auto& t : checkpoint_times) {
+      out_ckp << t.count << "," << t.partition_id << "," << (start_execution_timestamp.count() - t.start_time)
+        << "," << (start_execution_timestamp.count() - t.end_time) << "," << t.time_taken << std::endl;
+  }
+  out_ckp.close();
 }
 
 static void usage(std::string prog) {
