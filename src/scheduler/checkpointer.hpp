@@ -18,8 +18,8 @@ namespace checkpoint {
 struct checkpoint_times {
   int partition_id;
   int count;
-  long start_time;
-  long end_time;
+  std::chrono::time_point<std::chrono::system_clock> start_time;
+  std::chrono::time_point<std::chrono::system_clock> end_time;
   long time_taken;
   long size;
   size_t log_size;
@@ -91,7 +91,7 @@ private:
   void make_checkpoint(std::shared_ptr<kvstorage::Storage> storage,
                        std::unordered_set<int> partition_used_keys) {
     checkpoint_counter_++;
-    auto start_time = std::chrono::system_clock::now();
+    const auto start_time = std::chrono::system_clock::now();
     int ckp_size;
     try {
       ckp_size = serialize_storage_to_file(storage, partition_used_keys);
@@ -100,12 +100,12 @@ private:
       exit(1);
     }
 
-    auto end_time = std::chrono::system_clock::now();
-    auto checkpointing_elapsed_time = (end_time - start_time).count();
+    const auto end_time = std::chrono::system_clock::now();
+    const auto checkpointing_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
 
     checkpoint_times_.emplace_back(checkpoint_times{
-        id_, checkpoint_counter_, start_time.time_since_epoch().count(),
-        end_time.time_since_epoch().count(), checkpointing_elapsed_time,
+        id_, checkpoint_counter_, start_time,
+        end_time, checkpointing_elapsed_time,
         ckp_size, log_.size(), partition_used_keys.size()});
     clear_request_log();
   }

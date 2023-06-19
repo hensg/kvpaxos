@@ -27,8 +27,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
+#include <iomanip>
 #include <fstream>
 #include <iostream>
+#include <filesystem>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -60,13 +63,14 @@ void metrics_loop(int sleep_duration, int n_requests,
                   kvpaxos::Scheduler<int> *scheduler) {
   auto already_counted_throughput = 0;
   auto counter = 0;
-  std::cout << "time,requests" << std::endl;
+  std::ofstream thr("results/throughput.csv");
+  thr << "time,requests" << std::endl;
   while (RUNNING) {
     std::this_thread::sleep_for(std::chrono::seconds(sleep_duration));
     auto executed_requests = scheduler->n_executed_requests();
     auto throughput = executed_requests - already_counted_throughput;
-    std::cout << counter << ",";
-    std::cout << throughput << "\n";
+    thr << counter << ",";
+    thr << throughput << "\n";
     already_counted_throughput += throughput;
     counter++;
 
@@ -74,12 +78,14 @@ void metrics_loop(int sleep_duration, int n_requests,
       break;
     }
   }
+  thr.close();
 }
 
 static kvpaxos::Scheduler<int> *
 initialize_scheduler(std::vector<workload::Request> &requests,
                      const toml_config &config,
-                     std::shared_ptr<kvstorage::Storage> storage) {
+                     std::shared_ptr<kvstorage::Storage> storage,
+                     long sliding_window) {
   auto n_partitions = toml::find<int>(config, "n_partitions");
   auto repartition_method_s =
       toml::find<std::string>(config, "repartition_method");
@@ -89,7 +95,7 @@ initialize_scheduler(std::vector<workload::Request> &requests,
   auto n_checkpointers = toml::find<int>(config, "n_checkpointers");
   auto *scheduler = new kvpaxos::Scheduler<int>(
       requests.size(), repartition_interval, n_partitions, n_checkpointers,
-      repartition_method, storage);
+      repartition_method, storage, sliding_window);
 
   auto n_initial_keys = toml::find<int>(config, "n_initial_keys");
 
@@ -139,38 +145,38 @@ join_maps(std::vector<std::unordered_map<int, time_point>> maps) {
   return joined_map;
 }
 
-static void run(const toml_config &config) {
+static void run(const toml_config &config, const std::string conf_name) {
+  using namespace std::literals;
+  const auto results_dir = std::string("results/") + conf_name;
+  std::filesystem::create_directory("results");
+  std::filesystem::create_directory(results_dir);
+
   auto requests_path = toml::find<std::string>(config, "requests_path");
   auto requests = std::move(workload::import_cs_requests(requests_path));
 
   const auto storage = std::make_shared<kvstorage::Storage>();
   //std::cout << "Initializing scheduler" << std::endl;
-  auto *scheduler = initialize_scheduler(requests, config, storage);
+  const long sliding_window = 999;
+  auto *scheduler = initialize_scheduler(requests, config, storage, sliding_window);
 
   auto print_percentage = toml::find<int>(config, "print_percentage");
   auto client_messages = to_client_messages(requests);
 
   auto throughput_thread = std::thread(metrics_loop, SLEEP, requests.size(), scheduler);
   
-  auto start_execution_timestamp = std::chrono::system_clock::now();
+  const auto start_execution_timestamp = std::chrono::system_clock::now();
   //std::cout << "Executing requests" << std::endl;
   execute_requests(*scheduler, client_messages, print_percentage);
 
   throughput_thread.join();
   auto end_execution_timestamp = std::chrono::system_clock::now();
 
-  auto makespan = end_execution_timestamp - start_execution_timestamp;
-  std::cout << "Makespan" << std::endl;
-  std::cout << makespan.count() << std::endl;
+  auto makespan = std::chrono::duration_cast<std::chrono::milliseconds>(end_execution_timestamp - start_execution_timestamp);
 
-  auto &repartition_times = scheduler->repartition_timestamps();
-  std::cout << "Repartition at: ";
-  for (auto &repartition_time : repartition_times) {
-    std::cout << (repartition_time - start_execution_timestamp).count() << " ";
-  }
-  std::cout << std::endl;
-
-  std::flush(std::cout);
+  std::ofstream msmetric(results_dir + std::string("/makespan.csv"));
+  msmetric << "makespan(ms)" << std::endl;
+  msmetric << makespan.count() << std::endl;
+  msmetric.close();
 
   auto &partitions = scheduler->get_partitions();
 
@@ -184,14 +190,23 @@ static void run(const toml_config &config) {
   auto checkpoint_avg_elapsed_time = std::unordered_map<int, long>();
   auto checkpoint_avg_size = std::unordered_map<int, long>();
   auto num_of_checkpoints = 0;
-  std::cout << "Checkpoint times raw:" << std::endl;
+
+  std::ofstream ckp_metrics(results_dir + std::string("/checkpoint_raw_metrics.csv"));
+  ckp_metrics << "count,partition_id,start_time,end_time,duration,size(M),num_keys" << std::endl;
   for (auto& t : checkpoint_times) {
       if (t.count > num_of_checkpoints)
         num_of_checkpoints = t.count;
 
-      std::cout << t.count << "," << t.partition_id << "," << t.start_time
-                << "," << t.end_time << "," << t.time_taken << "," << t.size
-                << "," << t.log_size << "," << t.num_keys << std::endl;
+      ckp_metrics << t.count 
+                << "," << t.partition_id 
+                << ","
+                << std::chrono::duration_cast<std::chrono::milliseconds>(t.start_time - start_execution_timestamp).count()
+                << ","
+                << std::chrono::duration_cast<std::chrono::milliseconds>(t.end_time - start_execution_timestamp).count()
+                << "," << t.time_taken 
+                << "," << t.size/1024/1024 // MB
+                << "," << t.num_keys
+                << std::endl;
 
       if (checkpoint_avg_elapsed_time.find(t.partition_id) == checkpoint_avg_elapsed_time.end()) {
         checkpoint_avg_elapsed_time[t.partition_id] = t.time_taken;
@@ -205,62 +220,50 @@ static void run(const toml_config &config) {
         checkpoint_avg_size[t.partition_id] = checkpoint_avg_size.at(t.partition_id) + t.size;
       }
   }
+  ckp_metrics.close();
 
-  std::cout << "Checkpoint times:" << std::endl;
-  std::cout << "partition,avg-elapsed-time" << std::endl;
+  std::ofstream ckp_times(results_dir + std::string("/checkpoint_times.csv"));
+  ckp_times << "partition,avg-elapsed-time" << std::endl;
   for (auto& elapsed_time: checkpoint_avg_elapsed_time) {
-    std::cout << elapsed_time.first << "," << elapsed_time.second/num_of_checkpoints << std::endl;
+    ckp_times << elapsed_time.first << "," << elapsed_time.second/num_of_checkpoints << std::endl;
   }
-  std::cout << std::endl;
-  std::cout << "Checkpoint sizes:" << std::endl;
-  std::cout << "partition,avg-size" << std::endl;
-  for (auto& size: checkpoint_avg_size) {
-    std::cout << size.first << "," << size.second/num_of_checkpoints << std::endl;
-  }
-  std::cout << std::endl;
+  ckp_times.close();
 
+  std::ofstream ckp_sizes(results_dir + std::string("/checkpoint_sizes.csv"));
+  ckp_sizes << "partition,avg-size" << std::endl;
+  for (auto& size: checkpoint_avg_size) {
+    ckp_sizes << size.first << "," << size.second/num_of_checkpoints << std::endl;
+  }
+  ckp_sizes.close();
 
   auto &csb_requests = scheduler->get_crossborder_requests();
-  std::cout << "Crossborder requests executed:" << std::endl;
-  std::cout << "num_partitions,num_requests" << std::endl;
+  std::ofstream ckp_cross(results_dir + std::string("/crossborder_req.csv"));
+  ckp_cross << "num_partitions,num_requests" << std::endl;
   for (int i = 1; i < csb_requests.size(); i++) {
-    std::cout << i << "," << csb_requests.at(i) << std::endl;
+    ckp_cross << i << "," << csb_requests.at(i) << std::endl;
   }
+  ckp_cross.close();
 
   auto &reqs_by_thread = scheduler->get_requests_per_thread();
-  std::cout << "Requests per thread executed:" << std::endl;
-  std::cout << "thread,num_requests" << std::endl;
+  std::ofstream req_per_thread(results_dir + std::string("/request_per_thread.csv"));
+  req_per_thread << "thread,num_requests" << std::endl;
   for (int i = 0; i < reqs_by_thread.size(); i++) {
-    std::cout << i << "," << reqs_by_thread.at(i) << std::endl;
+    req_per_thread << i << "," << reqs_by_thread.at(i) << std::endl;
   }
+  req_per_thread.close();
 
-  std::cout << "Checkpoint turns:" << std::endl;
-  for (auto &ckp_turn : scheduler->get_ckp_turns()) {
-    for (auto &p : ckp_turn) {
-      std::cout << p->id() << ",";
-    }
-    std::cout << std::endl;
-  }
-
-  std::ofstream out("repartition_metrics.csv");
-  out << "start,end,timetaken" << std::endl;
+  std::ofstream rep(results_dir + std::string("/repartition_metrics.csv"));
+  rep << "start,end,timetaken" << std::endl;
   for (auto &repartition_times : scheduler->repartition_timestamps()) {
-    out << (start_execution_timestamp - std::get<0>(repartition_times)).count()
+    rep << std::chrono::duration_cast<std::chrono::milliseconds>(std::get<0>(repartition_times) - start_execution_timestamp).count()
       << "," 
-      << (start_execution_timestamp - std::get<1>(repartition_times)).count()
+      << std::chrono::duration_cast<std::chrono::milliseconds>(std::get<1>(repartition_times) - start_execution_timestamp).count()
       << ","
-      << (std::get<1>(repartition_times) - std::get<0>(repartition_times)).count()
+      << std::chrono::duration_cast<std::chrono::milliseconds>(std::get<1>(repartition_times) - std::get<0>(repartition_times)).count()
       << std::endl;
   }
-  out.close();
+  rep.close();
 
-  std::ofstream out_ckp("checkpoint_metrics.csv");
-  out_ckp << "count,id,start,end,timetaken" << std::endl;
-  for (auto& t : checkpoint_times) {
-      out_ckp << t.count << "," << t.partition_id << "," << (start_execution_timestamp.count() - t.start_time)
-        << "," << (start_execution_timestamp.count() - t.end_time) << "," << t.time_taken << std::endl;
-  }
-  out_ckp.close();
 }
 
 static void usage(std::string prog) {
@@ -274,9 +277,12 @@ int main(int argc, char const *argv[]) {
   }
 
   // workload::generate_workload_a(argv[1], std::stoi(argv[2]));
-  const auto config = toml::parse(argv[1]);
+  auto filename = argv[1];
+  const auto config = toml::parse(filename);
 
-  run(config);
+  std::string ss(filename);
+  auto dot_pos = ss.find(".");
+  run(config, ss.substr(0, dot_pos));
 
   return 0;
 }

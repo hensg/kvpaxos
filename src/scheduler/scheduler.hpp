@@ -39,12 +39,14 @@ public:
                 int n_partitions,
                 int n_checkpointers,
                 model::CutMethod repartition_method,
-                std::shared_ptr<kvstorage::Storage> storage
+                std::shared_ptr<kvstorage::Storage> storage,
+                long sliding_window_time
     ) : storage_{storage},
         n_partitions_{n_partitions},
         repartition_interval_{repartition_interval},
         repartition_method_{repartition_method},
-        n_checkpointers_{n_checkpointers}
+        n_checkpointers_{n_checkpointers},
+        sliding_window_time_{sliding_window_time}
     {
         partition_count_ = 0;
         checkpointers_ = std::vector<checkpoint::Checkpointer<T>*>();
@@ -62,7 +64,7 @@ public:
             partitions_.emplace(i, partition);
             partitions_to_checkpoint_.emplace(i);
         }
-        crossborder_requests_ = std::vector<int>(n_partitions, 0);
+        crossborder_requests_ = std::vector<int>(n_partitions+1, 0);
         requests_per_thread_ = std::vector<int>(n_partitions, 0);
         for (auto i = 0; i < n_partitions_; i++) {
           for (auto j = 0; j < n_partitions_; j++) {
@@ -393,12 +395,12 @@ private:
                 partitions_,
                 repartition_method_,
                 *data_to_partition_,
-                first_repartition
+                first_repartition,
+                sliding_window_time_
             )
         );
         delete data_to_partition_;
         data_to_partition_ = new std::unordered_map<T, Partition<T>*>();
-
 
         delete partition_to_data_;
         partition_to_data_ = new std::unordered_map<Partition<T>*, std::vector<int>>();
@@ -465,6 +467,7 @@ private:
 
     std::shared_ptr<kvstorage::Storage> storage_;
     std::mutex mutex_;
+    long sliding_window_time_ = 99999;
 };
 
 

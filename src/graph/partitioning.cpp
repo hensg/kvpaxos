@@ -1,4 +1,5 @@
 #include "partitioning.h"
+#include <chrono>
 
 
 namespace model {
@@ -22,12 +23,13 @@ std::vector<int> cut_graph (
     CutMethod method,
     const std::unordered_map<int, kvpaxos::Partition<int>*>& old_data_to_partition =
         std::unordered_map<int, kvpaxos::Partition<int>*>(),
-    bool firt_repartition = true
+    bool firt_repartition = true,
+    long sliding_window_time = 999999
 ) {
     if (method == METIS) {
-        return multilevel_cut(graph, partitions.size(), method);
+        return multilevel_cut(graph, partitions.size(), method, sliding_window_time);
     } else if (method == KAHIP) {
-        return multilevel_cut(graph, partitions.size(), method);
+        return multilevel_cut(graph, partitions.size(), method, sliding_window_time);
     } else if (method == FENNEL) {
         return fennel_cut(graph, partitions.size());
     } else {
@@ -36,7 +38,7 @@ std::vector<int> cut_graph (
 }
 
 std::vector<int> multilevel_cut(
-    const Graph<int>& graph, int n_partitions, CutMethod cut_method
+    const Graph<int>& graph, int n_partitions, CutMethod cut_method, long sliding_window_time
 )
 {
     auto& vertex = graph.vertex();
@@ -44,9 +46,25 @@ std::vector<int> multilevel_cut(
     int n_constrains = 1;
 
     auto vertice_weight = std::vector<int>();
-    for (auto& vertice : sorted_vertex) {
-        vertice_weight.push_back(vertex.at(vertice));
+    //for (auto& vertice : sorted_vertex) {
+    //    vertice_weight.push_back(vertex.at(vertice));
+    //}
+
+    const auto& timed_vertex = graph.timed_vertex();
+    auto sorted_timed_vertex = std::move(graph.sorted_timed_vertex());
+    auto timed_vertice_weight = std::vector<int>();
+    auto now_in_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+
+    for (auto& vertice : sorted_timed_vertex) {
+        for (auto& timed_vertice : timed_vertex.at(vertice)) {
+            if (timed_vertice.first >= (now_in_seconds - sliding_window_time)) {
+                timed_vertice_weight.push_back(timed_vertice.second);
+            }
+        }
     }
+    vertice_weight = timed_vertice_weight;
 
     auto x_edges = std::vector<int>();
     auto edges = std::vector<int>();
