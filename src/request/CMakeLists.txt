@@ -22,5 +22,6 @@ target_link_libraries(
     request
         PUBLIC
             CONAN_PKG::toml11
+            CONAN_PKG::fast-cpp-csv-parser
             types
 )

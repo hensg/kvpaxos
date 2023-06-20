@@ -193,15 +193,6 @@ private:
 
             case CHECKPOINT:
             {
-                //if (request.keys.size() > 0) {
-                //    std::stringstream ss;
-                //    ss << id_ << " -> ";
-                //    for (auto& k: request.keys) {
-                //        ss << k << ",";
-                //    }
-                //    ss << std::endl;
-                //    std::cout << ss.str();
-                //}
                 std::unique_lock lk(queue_mutex_);
                 std::shared_ptr<std::condition_variable> cv = std::make_shared<std::condition_variable>();
                 checkpointer_->time_for_checkpoint(request.keys, cv);

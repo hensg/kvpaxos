@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <toml11/toml.hpp>
+#include <fast-cpp-csv-parser/csv.h>
 #include "random.h"
 #include "request.hpp"
 
@@ -22,6 +23,7 @@ Request make_request(char* type_buffer, char* key_buffer, char* arg_buffer);
 
 std::vector<Request> import_requests(const std::string& file_path, const std::string& field);
 std::vector<Request> import_cs_requests(const std::string& file_path);
+std::vector<Request> import_cs_requests_csv(const std::string& file_path);
 
 /*
 Those generations were made for a simpler execution that doesn't differentiate

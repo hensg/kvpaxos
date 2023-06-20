@@ -4,7 +4,6 @@
 #include <fstream>
 #include <string>
 
-
 namespace workload {
 
 Request make_request(char* type_buffer, char* key_buffer, char* arg_buffer) {
@@ -13,6 +12,17 @@ Request make_request(char* type_buffer, char* key_buffer, char* arg_buffer) {
     auto arg = std::string(arg_buffer);
 
     return Request(type, key, arg);
+}
+
+std::vector<Request> import_cs_requests_csv(const std::string& file_path) {
+  io::CSVReader<4> in(file_path);
+  in.set_header("type", "key", "arg", "ignore");
+  std::vector<Request> requests;
+  int type; long key; std::string arg; std::string ignore;
+  while(in.read_row(type, key, arg, ignore)){
+    requests.emplace_back(Request(static_cast<request_type>(type), key, arg));
+  }
+  return requests;
 }
 
 std::vector<Request> import_cs_requests(const std::string& file_path)

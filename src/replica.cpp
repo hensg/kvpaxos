@@ -57,27 +57,32 @@ using toml_config =
 
 static int verbose = 0;
 static int SLEEP = 1;
-static bool RUNNING = true;
+static bool RUNNING = false;
 
 void metrics_loop(int sleep_duration, int n_requests,
-                  kvpaxos::Scheduler<int> *scheduler) {
+                  kvpaxos::Scheduler<int> *scheduler,
+                  std::string results_dir,
+                  std::chrono::time_point<std::chrono::system_clock> start_time) {
   auto already_counted_throughput = 0;
-  auto counter = 0;
-  std::ofstream thr("results/throughput.csv");
+  std::ofstream thr(results_dir + std::string("/throughput.csv"));
   thr << "time,requests" << std::endl;
   while (RUNNING) {
-    std::this_thread::sleep_for(std::chrono::seconds(sleep_duration));
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    auto moment = std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::system_clock::now() - start_time
+    ).count();
+
     auto executed_requests = scheduler->n_executed_requests();
     auto throughput = executed_requests - already_counted_throughput;
-    thr << counter << ",";
-    thr << throughput << "\n";
-    already_counted_throughput += throughput;
-    counter++;
 
+    thr << moment << "," << throughput << std::endl;
+
+    already_counted_throughput += throughput;
     if (executed_requests >= n_requests) {
       break;
     }
   }
+  thr.flush();
   thr.close();
 }
 
@@ -85,7 +90,7 @@ static kvpaxos::Scheduler<int> *
 initialize_scheduler(std::vector<workload::Request> &requests,
                      const toml_config &config,
                      std::shared_ptr<kvstorage::Storage> storage,
-                     long sliding_window) {
+                     int sliding_window) {
   auto n_partitions = toml::find<int>(config, "n_partitions");
   auto repartition_method_s =
       toml::find<std::string>(config, "repartition_method");
@@ -99,7 +104,13 @@ initialize_scheduler(std::vector<workload::Request> &requests,
 
   auto n_initial_keys = toml::find<int>(config, "n_initial_keys");
 
-  scheduler->process_populate_requests(n_initial_keys);
+  long max_key = 0;
+  for (auto& r : requests) {
+    if (r.key() > max_key) {
+      max_key = r.key();
+    }
+  }
+  scheduler->process_populate_requests(max_key + 20);
 
   scheduler->run();
   return scheduler;
@@ -110,7 +121,7 @@ to_client_messages(std::vector<workload::Request> &requests) {
   std::vector<struct client_message> client_messages;
   auto counter = 0;
   for (auto i = 0; i < requests.size(); i++) {
-    auto &request = requests[i];
+    auto request = requests[i];
     struct client_message client_message;
     client_message.sin_port = htons(0);
     client_message.id = i;
@@ -131,6 +142,7 @@ to_client_messages(std::vector<workload::Request> &requests) {
 void execute_requests(kvpaxos::Scheduler<int> &scheduler,
                       std::vector<struct client_message> &requests,
                       int print_percentage) {
+  RUNNING = true;
   for (auto &request : requests) {
     scheduler.schedule_and_answer(request);
   }
@@ -147,25 +159,32 @@ join_maps(std::vector<std::unordered_map<int, time_point>> maps) {
 
 static void run(const toml_config &config, const std::string conf_name) {
   using namespace std::literals;
+
+  const auto all_conf_name = "all";
+
   const auto results_dir = std::string("results/") + conf_name;
   std::filesystem::create_directory("results");
   std::filesystem::create_directory(results_dir);
 
   auto requests_path = toml::find<std::string>(config, "requests_path");
-  auto requests = std::move(workload::import_cs_requests(requests_path));
+  auto requests = std::move(workload::import_cs_requests_csv(requests_path));
 
   const auto storage = std::make_shared<kvstorage::Storage>();
   //std::cout << "Initializing scheduler" << std::endl;
-  const long sliding_window = 999;
+
+  const int sliding_window = 999999; // millis
+
   auto *scheduler = initialize_scheduler(requests, config, storage, sliding_window);
 
   auto print_percentage = toml::find<int>(config, "print_percentage");
   auto client_messages = to_client_messages(requests);
 
-  auto throughput_thread = std::thread(metrics_loop, SLEEP, requests.size(), scheduler);
-  
   const auto start_execution_timestamp = std::chrono::system_clock::now();
-  //std::cout << "Executing requests" << std::endl;
+  const long n_request = requests.size();
+  requests.clear();
+  auto throughput_thread = std::thread(metrics_loop, SLEEP, n_request, scheduler, results_dir, start_execution_timestamp);
+
+  std::cout << "Executing requests" << std::endl;
   execute_requests(*scheduler, client_messages, print_percentage);
 
   throughput_thread.join();

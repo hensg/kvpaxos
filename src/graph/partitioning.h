@@ -36,11 +36,11 @@ std::vector<int> cut_graph (
     const std::unordered_map<int, kvpaxos::Partition<int>*>& old_data_to_partition,
         /* = std::unordered_map<int, kvpaxos::Partition<int>*>() */
     bool first_repartition, /* = true */
-    long sliding_window_time /* = 999999 */
+    int sliding_window_time /* = 999999 */
 );
 
 std::vector<int> multilevel_cut
-    (const Graph<int>& graph, int n_partitions, CutMethod cut_method, long sliding_window_time);
+    (const Graph<int>& graph, int n_partitions, CutMethod cut_method, int sliding_window_time);
 
 std::vector<int> fennel_cut(const Graph<int>& graph, int n_partitions);
 

@@ -1,7 +1,6 @@
 #include "partitioning.h"
 #include <chrono>
 
-
 namespace model {
 
 // This is a workaround to reuse the same method for both fennel
@@ -24,7 +23,7 @@ std::vector<int> cut_graph (
     const std::unordered_map<int, kvpaxos::Partition<int>*>& old_data_to_partition =
         std::unordered_map<int, kvpaxos::Partition<int>*>(),
     bool firt_repartition = true,
-    long sliding_window_time = 999999
+    int sliding_window_time = 999999
 ) {
     if (method == METIS) {
         return multilevel_cut(graph, partitions.size(), method, sliding_window_time);
@@ -38,7 +37,7 @@ std::vector<int> cut_graph (
 }
 
 std::vector<int> multilevel_cut(
-    const Graph<int>& graph, int n_partitions, CutMethod cut_method, long sliding_window_time
+    const Graph<int>& graph, int n_partitions, CutMethod cut_method, int sliding_window_time
 )
 {
     auto& vertex = graph.vertex();
@@ -50,21 +49,20 @@ std::vector<int> multilevel_cut(
     //    vertice_weight.push_back(vertex.at(vertice));
     //}
 
-    const auto& timed_vertex = graph.timed_vertex();
-    auto sorted_timed_vertex = std::move(graph.sorted_timed_vertex());
-    auto timed_vertice_weight = std::vector<int>();
-    auto now_in_seconds = std::chrono::duration_cast<std::chrono::seconds>(
-               std::chrono::system_clock::now().time_since_epoch())
-        .count();
-
-    for (auto& vertice : sorted_timed_vertex) {
-        for (auto& timed_vertice : timed_vertex.at(vertice)) {
-            if (timed_vertice.first >= (now_in_seconds - sliding_window_time)) {
-                timed_vertice_weight.push_back(timed_vertice.second);
+    const auto& timed_vertex_weight = graph.timed_vertex();
+    auto now_in_millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+         std::chrono::system_clock::now().time_since_epoch()
+    ).count();
+    for (auto& vertice : sorted_vertex) {
+        int weight = 0;
+        for (auto& timed_weight: timed_vertex_weight.at(vertice)) {
+            if (timed_weight.first >= (now_in_millis - sliding_window_time)) {
+                weight += timed_weight.second;
             }
         }
+        vertice_weight.push_back(weight);
     }
-    vertice_weight = timed_vertice_weight;
+
 
     auto x_edges = std::vector<int>();
     auto edges = std::vector<int>();
@@ -76,10 +74,21 @@ std::vector<int> multilevel_cut(
         auto n_neighbours = graph.vertice_edges(vertice).size();
         x_edges.push_back(last_edge_index + n_neighbours);
 
-        for (auto& vk: graph.vertice_edges(vertice)) {
+        //for (auto& vk: graph.vertice_edges(vertice)) {
+        //    auto neighbour = vk.first;
+        //    auto weight = vk.second;
+        //    edges.push_back(neighbour);
+        //    edges_weight.push_back(weight);
+        //}
+        for (auto& vk: graph.timed_vertice_edges(vertice)) {
             auto neighbour = vk.first;
-            auto weight = vk.second;
             edges.push_back(neighbour);
+            int weight = 0;
+            for (auto& timed_weight: vk.second) {
+                if (timed_weight.first >= (now_in_millis - sliding_window_time)) {
+                    weight += timed_weight.second;
+                }
+            }
             edges_weight.push_back(weight);
         }
     }

@@ -18,19 +18,19 @@ template <typename T> class Graph {
 public:
   Graph() = default;
 
-  long get_second_since_epoch() {
-    return std::chrono::duration_cast<std::chrono::seconds>(
+  long get_millis_since_epoch() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
         .count();
   }
 
   void add_vertice(T data, int weight = 0) {
     vertex_weight_[data] = weight;
-    const auto second = get_second_since_epoch();
-    timed_vertex_weight_[data] = std::unordered_map<int, int>();
-    timed_vertex_weight_[data][second] = weight;
+    const auto millis = get_millis_since_epoch();
+    timed_vertex_weight_[data] = std::unordered_map<long, int>();
+    timed_vertex_weight_[data][millis] = weight;
     edges_weight_[data] = std::unordered_map<T, int>();
-    timed_edges_weight_[data] = std::unordered_map<T, std::unordered_map<int, int>>();
+    timed_edges_weight_[data] = std::unordered_map<T, std::unordered_map<long, int>>();
     total_vertex_weight_ += weight;
   }
 
@@ -43,7 +43,7 @@ public:
     edges_weight_[from][to] = weight;
     edges_weight_[to][from] = weight;
 
-    const auto second = get_second_since_epoch();
+    const auto second = get_millis_since_epoch();
     timed_edges_weight_[from][to][second] = weight;
     timed_edges_weight_[to][from][second] = weight;
     n_edges_++;
@@ -53,11 +53,11 @@ public:
   void increase_vertice_weight(T vertice, int value = 1) {
     vertex_weight_[vertice] += value;
 
-    const auto second = get_second_since_epoch();
+    const auto millis = get_millis_since_epoch();
     auto& vertice_timed_weights = timed_vertex_weight_[vertice];
-    vertice_timed_weights.find(second) != vertice_timed_weights.end()
-        ? vertice_timed_weights[second] += value
-        : vertice_timed_weights[second] = value;
+    vertice_timed_weights.find(millis) != vertice_timed_weights.end()
+        ? vertice_timed_weights[millis] += value
+        : vertice_timed_weights[millis] = value;
 
     total_vertex_weight_ += value;
   }
@@ -66,7 +66,7 @@ public:
     edges_weight_[from][to] += value;
     edges_weight_[to][from] += value;
 
-    const auto second = get_second_since_epoch();
+    const auto second = get_millis_since_epoch();
     timed_edges_weight_[from][to][second] += value;
     timed_edges_weight_[to][from][second] += value;
 
@@ -109,14 +109,17 @@ public:
   const std::unordered_map<T, int> &vertice_edges(T vertice) const {
     return edges_weight_.at(vertice);
   }
+  const std::unordered_map<T, std::unordered_map<long, int>> &timed_vertice_edges(T vertice) const {
+    return timed_edges_weight_.at(vertice);
+  }
   const std::unordered_map<T, int> &vertex() const { return vertex_weight_; }
-  const std::unordered_map<T, std::unordered_map<int, int>>& timed_vertex() const { return timed_vertex_weight_; }
+  const std::unordered_map<T, std::unordered_map<long, int>>& timed_vertex() const { return timed_vertex_weight_; }
 
 private:
   std::unordered_map<T, int> vertex_weight_;
-  std::unordered_map<T, std::unordered_map<int, int>> timed_vertex_weight_;
+  std::unordered_map<T, std::unordered_map<long, int>> timed_vertex_weight_;
   std::unordered_map<T, std::unordered_map<T, int>> edges_weight_;
-  std::unordered_map<T, std::unordered_map<T, std::unordered_map<int, int>>> timed_edges_weight_;
+  std::unordered_map<T, std::unordered_map<T, std::unordered_map<long, int>>> timed_edges_weight_;
   int n_edges_{0};
   int total_vertex_weight_{0};
   int total_edges_weight_{0};

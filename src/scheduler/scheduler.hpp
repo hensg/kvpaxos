@@ -40,7 +40,7 @@ public:
                 int n_checkpointers,
                 model::CutMethod repartition_method,
                 std::shared_ptr<kvstorage::Storage> storage,
-                long sliding_window_time
+                int sliding_window_time
     ) : storage_{storage},
         n_partitions_{n_partitions},
         repartition_interval_{repartition_interval},
@@ -160,7 +160,7 @@ public:
         if (partitions.empty()) {
             std::stringstream ss;
             ss << "No partitions for this request! request: "
-                << "id:" << request.id 
+                << "key:" << request.key 
                 << ", type:" << request.type
                 << ", args:" << request.args 
                 << std::endl;
@@ -181,11 +181,11 @@ public:
         n_dispatched_requests_++;
         bool time_for_checkpoint = n_dispatched_requests_ % repartition_interval_ == 0;
         if (time_for_checkpoint && n_checkpointers_ > 0) {
+            sync_all_partitions();
             send_checkpoint_requests();
         }
 
         if (repartition_method_ != model::ROUND_ROBIN) {
-            //std::cout << "repartitioning" << std::endl;
             graph_requests_mutex_.lock();
                 graph_requests_queue_.push(request);
             graph_requests_mutex_.unlock();
@@ -198,15 +198,15 @@ public:
                 struct client_message sync_message;
                 sync_message.type = SYNC;
 
-                //std::cout << "locking..." << std::endl;
                 graph_requests_mutex_.lock();
                     graph_requests_queue_.push(sync_message);
                 graph_requests_mutex_.unlock();
                 sem_post(&graph_requests_semaphore_);
 
-                //std::cout << "waiting..." << std::endl;
+                // wait for the graph queue thread to be full consumed
                 pthread_barrier_wait(&repartition_barrier_);
-                //std::cout << "repartitioning..." << std::endl;
+
+                // repartition
                 repartition_data();
             }
         }
@@ -226,7 +226,7 @@ public:
 private:
 
     void send_checkpoint_requests() {
-        //std::cout << "SENDING CHECKPOINT" << std::endl;
+        // std::cout << "SENDING CHECKPOINT" << std::endl;
         for (int i = 0; i < partitions_.size(); i++) {
             Partition<T>* p = partitions_.at(i);
             struct client_message checkpoint_message; 
@@ -467,7 +467,7 @@ private:
 
     std::shared_ptr<kvstorage::Storage> storage_;
     std::mutex mutex_;
-    long sliding_window_time_ = 99999;
+    int sliding_window_time_ = 999999;
 };
 
 
