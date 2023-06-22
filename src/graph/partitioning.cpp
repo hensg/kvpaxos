@@ -17,7 +17,7 @@ struct dummy_partition {
 
 
 std::vector<int> cut_graph (
-    const Graph<int>& graph,
+    Graph<int>& graph,
     std::unordered_map<int, kvpaxos::Partition<int>*>& partitions,
     CutMethod method,
     const std::unordered_map<int, kvpaxos::Partition<int>*>& old_data_to_partition =
@@ -37,30 +37,50 @@ std::vector<int> cut_graph (
 }
 
 std::vector<int> multilevel_cut(
-    const Graph<int>& graph, int n_partitions, CutMethod cut_method, int sliding_window_time
+    Graph<int>& graph, int n_partitions, CutMethod cut_method, int sliding_window_time
 )
 {
     auto& vertex = graph.vertex();
-    auto sorted_vertex = std::move(graph.sorted_vertex());
+    auto sorted_vertex = graph.sorted_vertex();
     int n_constrains = 1;
 
-    auto vertice_weight = std::vector<int>();
-    //for (auto& vertice : sorted_vertex) {
-    //    vertice_weight.push_back(vertex.at(vertice));
-    //}
-
-    const auto& timed_vertex_weight = graph.timed_vertex();
-    auto now_in_millis = std::chrono::duration_cast<std::chrono::milliseconds>(
-         std::chrono::system_clock::now().time_since_epoch()
+    long now_second = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()
     ).count();
-    for (auto& vertice : sorted_vertex) {
-        int weight = 0;
+    now_second = std::round(now_second / 15.0);
+
+    auto vertice_weight = std::vector<int>();
+    bool has_timed_weight = false;
+
+    if (sliding_window_time == 999999) {
+      for (auto& vertice : sorted_vertex) {
+          vertice_weight.push_back(vertex.at(vertice));
+      }
+
+    } else {
+
+      const auto& timed_vertex_weight = graph.timed_vertex();
+      for (auto& vertice : sorted_vertex) {
+        std::vector<long> times_to_remove;
+        int weight = 1;
         for (auto& timed_weight: timed_vertex_weight.at(vertice)) {
-            if (timed_weight.first >= (now_in_millis - sliding_window_time)) {
+
+            if (timed_weight.first >= (now_second - sliding_window_time)) {
                 weight += timed_weight.second;
+                has_timed_weight = true;
+            } else {
+
+                times_to_remove.push_back(timed_weight.first);
             }
         }
+        graph.clear_timed_vertex(vertice, times_to_remove);
         vertice_weight.push_back(weight);
+      }
+    }
+    if (has_timed_weight) {
+      std::cout << "debug: Has timed vertex weight" << std::endl;
+    } else {
+      std::cout << "debug: NO timed vertex weight" << std::endl;
     }
 
 
@@ -69,28 +89,42 @@ std::vector<int> multilevel_cut(
     auto edges_weight = std::vector<int>();
 
     x_edges.push_back(0);
+    has_timed_weight = false;
     for (auto& vertice : sorted_vertex) {
         auto last_edge_index = x_edges.back();
         auto n_neighbours = graph.vertice_edges(vertice).size();
         x_edges.push_back(last_edge_index + n_neighbours);
 
-        //for (auto& vk: graph.vertice_edges(vertice)) {
-        //    auto neighbour = vk.first;
-        //    auto weight = vk.second;
-        //    edges.push_back(neighbour);
-        //    edges_weight.push_back(weight);
-        //}
-        for (auto& vk: graph.timed_vertice_edges(vertice)) {
-            auto neighbour = vk.first;
-            edges.push_back(neighbour);
-            int weight = 0;
-            for (auto& timed_weight: vk.second) {
-                if (timed_weight.first >= (now_in_millis - sliding_window_time)) {
-                    weight += timed_weight.second;
-                }
-            }
-            edges_weight.push_back(weight);
+        if (sliding_window_time == 999999) {
+          for (auto& vk: graph.vertice_edges(vertice)) {
+              auto neighbour = vk.first;
+              auto weight = vk.second;
+              edges.push_back(neighbour);
+              edges_weight.push_back(weight);
+          }
+        } else {
+          std::vector<long> times_to_remove;
+          for (auto& vk: graph.timed_vertice_edges(vertice)) {
+              int neighbour = vk.first;
+              edges.push_back(neighbour);
+              int weight = 1;
+              for (auto& timed_weight: vk.second) {
+                  if (timed_weight.first >= (now_second - sliding_window_time)) {
+                      weight += timed_weight.second;
+                      has_timed_weight = true;
+                  } else {
+                      times_to_remove.push_back(timed_weight.first);
+                  }
+              }
+              edges_weight.push_back(weight);
+          }
+          graph.clear_timed_edge(vertice, times_to_remove);
         }
+    }
+    if (has_timed_weight) {
+      std::cout << "debug: Has timed edge weight" << std::endl;
+    } else {
+      std::cout << "debug: NO timed edge weight" << std::endl;
     }
 
     int options[METIS_NOPTIONS];
@@ -146,7 +180,7 @@ std::unordered_map<int, int> sum_neighbours(
 
 template <typename T>
 int fennel_vertice_partition(
-    const Graph<int>& graph,
+    Graph<int>& graph,
     int vertice,
     const std::unordered_map<int, T*>& partitions,
     const std::unordered_map<int, T*>& vertice_to_partition,
@@ -189,7 +223,7 @@ int fennel_vertice_partition(
     return designated_partition;
 }
 
-std::vector<int> fennel_cut(const Graph<int>& graph, int n_partitions) {
+std::vector<int> fennel_cut(Graph<int>& graph, int n_partitions) {
     std::unordered_map<int, dummy_partition*> partitions;
     for (auto i = 0; i < n_partitions; i++) {
         auto* partition = new dummy_partition(i);
@@ -231,7 +265,7 @@ std::vector<int> fennel_cut(const Graph<int>& graph, int n_partitions) {
 }
 
 std::vector<int> refennel_cut(
-    const Graph<int>& graph,
+    Graph<int>& graph,
     const std::unordered_map<int, kvpaxos::Partition<int>*>& old_data_to_partition,
     std::unordered_map<int, kvpaxos::Partition<int>*>& partitions,
     bool first_repartition

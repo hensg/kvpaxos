@@ -8,6 +8,9 @@ add_subdirectory(graph)
 
 add_executable(replica)
 
+# set_target_properties(replica PROPERTIES COMPILE_FLAGS "-g -O0 -fno-omit-frame-pointer")
+# set_target_properties(replica PROPERTIES LINK_FLAGS "-g")
+
 target_sources(
     replica
         PRIVATE

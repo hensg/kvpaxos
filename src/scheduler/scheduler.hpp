@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <netinet/tcp.h>
+#include <ostream>
 #include <pthread.h>
 #include <queue>
 #include <semaphore.h>
@@ -40,18 +41,26 @@ public:
                 int n_checkpointers,
                 model::CutMethod repartition_method,
                 std::shared_ptr<kvstorage::Storage> storage,
-                int sliding_window_time
+                int sliding_window_time,
+                std::chrono::time_point<std::chrono::system_clock>* start_time
     ) : storage_{storage},
         n_partitions_{n_partitions},
         repartition_interval_{repartition_interval},
         repartition_method_{repartition_method},
         n_checkpointers_{n_checkpointers},
-        sliding_window_time_{sliding_window_time}
+        sliding_window_time_{sliding_window_time},
+        n_requests_{n_requests}
     {
+        running_ = true;
         partition_count_ = 0;
+        start_time_ = start_time;
         checkpointers_ = std::vector<checkpoint::Checkpointer<T>*>();
+
+        scheduler_ckp_barrier_ = new pthread_barrier_t();
+        pthread_barrier_init(scheduler_ckp_barrier_, NULL, n_checkpointers_+1);
+
         for (auto i = 0; i < n_checkpointers; i++) {
-            auto* ckp = new checkpoint::Checkpointer<T>(storage, i, n_partitions_ / n_checkpointers_);
+            auto* ckp = new checkpoint::Checkpointer<T>(storage, i, n_partitions_ / n_checkpointers_, scheduler_ckp_barrier_);
             checkpointers_.push_back(ckp);
         }
         for (auto i = 0; i < n_partitions_; i++) {
@@ -71,7 +80,7 @@ public:
             conflict_matrix_[i][j] = 0;
           }
         }
-      
+
         data_to_partition_ = new std::unordered_map<T, Partition<T>*>();
         partition_to_data_ = new std::unordered_map<Partition<T>*, std::vector<int>>();
         for (int i = 0; i < partitions_.size(); i++) {
@@ -85,14 +94,61 @@ public:
             graph_thread_ = std::thread(&Scheduler<T>::update_graph_loop, this);
         }
         //graph_queue_size_printer_ = std::thread(&Scheduler<T>::graph_loop_size_printer, this);
+        sem_init(&update_req_sem_, 0, 0);
+        sem_init(&window_cleaner_sem_, 0, 0);
+        executed_requests_thread_ = std::thread(&Scheduler<T>::update_executed_requests, this);
+        // slide_window_cleaner_thread_ = std::thread(&Scheduler<T>::slide_window_cleaner, this);
     }
 
     ~Scheduler() {
-        for (auto partition: partitions_) {
-            delete partition;
+        running_ = false;
+
+        std::cout << "Joining req threads" << std::endl;
+        std::flush(std::cout);
+        if (executed_requests_thread_.joinable()) {
+            sem_post(&update_req_sem_);
+            executed_requests_thread_.join();
         }
+        std::cout << "Joining slide threads" << std::endl;
+        if (slide_window_cleaner_thread_.joinable()) {
+            sem_post(&window_cleaner_sem_);
+            slide_window_cleaner_thread_.join();
+        }
+
+        std::cout << "Joining graph thread" << std::endl;
+        std::flush(std::cout);
+        if (graph_thread_.joinable()) {
+            sem_post(&graph_requests_semaphore_);
+            graph_thread_.join();
+        }
+
+        std::cout << "Closing checkpointers" << std::endl;
+        std::flush(std::cout);
+        for (auto ckp: checkpointers_) {
+          delete ckp;
+        }
+
+        std::cout << "Closing partitions" << std::endl;
+        std::flush(std::cout);
+        for (auto partition: partitions_) {
+            delete partition.second;
+        }
+
+        std::cout << "Deleting start time" << std::endl;
+        std::flush(std::cout);
+        delete start_time_;
+
+        std::cout << "Deleting partition mapping" << std::endl;
+        std::flush(std::cout);
         delete data_to_partition_;
         delete partition_to_data_;
+
+        pthread_barrier_destroy(scheduler_ckp_barrier_);
+        delete scheduler_ckp_barrier_;
+
+        sem_destroy(&update_req_sem_);
+        sem_destroy(&window_cleaner_sem_);
+        sem_destroy(&graph_requests_semaphore_);
     }
 
     void process_populate_requests(const int n_initial_keys) {
@@ -114,6 +170,8 @@ public:
         for (auto& kv : partitions_) {
             kv.second->start_worker_thread();
         }
+        sem_post(&update_req_sem_);
+        sem_post(&window_cleaner_sem_);
     }
 
     int n_executed_requests() {
@@ -123,6 +181,14 @@ public:
             n_executed_requests += partition->n_executed_requests();
         }
         return n_executed_requests;
+    }
+
+    void wait_requests_execution() {
+        executed_requests_thread_.join();
+    }
+
+    std::unordered_map<long, int> get_executed_requests() {
+        return executed_requests_;
     }
 
     const std::vector<std::tuple<time_point, time_point>>& repartition_timestamps() const {
@@ -183,6 +249,9 @@ public:
         if (time_for_checkpoint && n_checkpointers_ > 0) {
             sync_all_partitions();
             send_checkpoint_requests();
+
+            // wait ckp start
+            pthread_barrier_wait(scheduler_ckp_barrier_);
         }
 
         if (repartition_method_ != model::ROUND_ROBIN) {
@@ -333,10 +402,57 @@ private:
         return data_to_partition_->find(key) != data_to_partition_->end();
     }
 
+    void update_executed_requests() {
+        sem_wait(&update_req_sem_);
+
+        std::flush(std::cout);
+        using namespace std::literals;
+
+        int already_counted_throughput = 0;
+
+        while (already_counted_throughput < n_requests_) {
+          std::this_thread::sleep_for(std::chrono::seconds(1));
+          const auto throughput = n_executed_requests() - already_counted_throughput;
+          const auto now = std::chrono::system_clock::now();
+          const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(now - *start_time_).count();
+          std::cout << "now_seconds: " << now_seconds << ", throughput: " << throughput << std::endl;
+
+          executed_requests_[now_seconds] = throughput;
+
+          already_counted_throughput += throughput;
+        }
+    }
+
+    void slide_window_cleaner() {
+      sem_wait(&window_cleaner_sem_);
+
+      while (running_) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        auto now_second = std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::system_clock::now().time_since_epoch())
+            .count();
+        now_second = std::round(now_second / 10.0);
+        now_second = now_second - 1;
+
+        std::cout << "Running slide cleaner for: "
+          << std::chrono::duration_cast<std::chrono::seconds>((std::chrono::system_clock::now() - *start_time_)).count() - sliding_window_time_
+          << " now_second: " << now_second
+          << std::endl;
+        for (auto& v: workload_graph_.vertex()) {
+          workload_graph_.clear_timed_vertex(v.first, std::vector<long>(now_second));
+          //workload_graph_.clear_timed_edge(v.first, std::vector<long>(now_second));
+        }
+      }
+    }
+
     void update_graph_loop() {
-        while(true) {
+        while(running_) {
             sem_wait(&graph_requests_semaphore_);
             graph_requests_mutex_.lock();
+                if (graph_requests_queue_.size() == 0) {
+                  graph_requests_mutex_.unlock();
+                  continue;
+                }
                 auto request = std::move(graph_requests_queue_.front());
                 graph_requests_queue_.pop();
             graph_requests_mutex_.unlock();
@@ -347,8 +463,8 @@ private:
             } else {
                 if (request.type == WRITE and request.sin_port == 1) {
                     auto partition = (Partition<T>*) request.s_addr;
-		            //data_to_partition_copy_.emplace(request.key, partition);
-		            partition->insert_data(request.key);
+                    //data_to_partition_copy_.emplace(request.key, partition);
+                    partition->insert_data(request.key);
                 }
                 update_graph(request);
             }
@@ -387,17 +503,16 @@ private:
     }
 
     void repartition_data() {
+        std::cout << "Repartitioning..." << std::endl;
         auto start_timestamp = std::chrono::system_clock::now();
 
-        auto partition_scheme = std::move(
-            model::cut_graph(
-                workload_graph_,
-                partitions_,
-                repartition_method_,
-                *data_to_partition_,
-                first_repartition,
-                sliding_window_time_
-            )
+        auto partition_scheme = model::cut_graph(
+          workload_graph_,
+          partitions_,
+          repartition_method_,
+          *data_to_partition_,
+          first_repartition,
+          sliding_window_time_
         );
         delete data_to_partition_;
         data_to_partition_ = new std::unordered_map<T, Partition<T>*>();
@@ -410,7 +525,7 @@ private:
             std::vector<int> new_vec;
             partition_to_data_->emplace(p, new_vec);
         }
-        auto sorted_vertex = std::move(workload_graph_.sorted_vertex());
+        auto sorted_vertex = workload_graph_.sorted_vertex();
         for (auto i = 0; i < partition_scheme.size(); i++) {
             auto partition = partition_scheme[i];
             if (partition >= n_partitions_) {
@@ -435,8 +550,6 @@ private:
     long n_dispatched_requests_ = 0;
     std::unordered_map<int, Partition<T>*> partitions_;
     std::unordered_map<T, Partition<T>*>* data_to_partition_;
-    std::unordered_map<T, Partition<T>*> data_to_partition_copy_;
-
     std::unordered_map<Partition<T>*, std::vector<int>>* partition_to_data_;
 
     int conflict_matrix_[32][32];
@@ -466,8 +579,17 @@ private:
     std::vector<checkpoint::Checkpointer<T>*> checkpointers_;
 
     std::shared_ptr<kvstorage::Storage> storage_;
+    std::unordered_map<long, int> executed_requests_;
     std::mutex mutex_;
     int sliding_window_time_ = 999999;
+    bool running_ = true;
+    std::chrono::time_point<std::chrono::system_clock>* start_time_;
+    std::thread executed_requests_thread_;
+    std::thread slide_window_cleaner_thread_;
+    int n_requests_;
+    sem_t update_req_sem_;
+    sem_t window_cleaner_sem_;
+    pthread_barrier_t* scheduler_ckp_barrier_;
 };
 
 

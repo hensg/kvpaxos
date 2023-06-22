@@ -1,5 +1,6 @@
 #include "types/types.h"
 #include <chrono>
+#include <semaphore.h>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -29,13 +30,20 @@ struct checkpoint_times {
 template <typename T> class Checkpointer {
 public:
   Checkpointer(std::shared_ptr<kvstorage::Storage> storage, int id,
-               int n_partitions_for_ckp)
+               int n_partitions_for_ckp, pthread_barrier_t* scheduler_barrier)
       : storage_{storage}, id_{id}, running_{true}, notify_count_{0},
         checkpoint_counter_{0}, cv_size_{n_partitions_for_ckp} {
 
     worker_thread_ = std::thread(&Checkpointer::thread_loop, this);
+    scheduler_barrier_ = scheduler_barrier;
   }
-  ~Checkpointer() {}
+  ~Checkpointer() {
+      running_ = false;
+      if (worker_thread_.joinable()) {
+          cv_.notify_all();
+          worker_thread_.join();
+      }
+  }
 
   void clear_request_log() {
     std::queue<struct client_message> new_log;
@@ -66,15 +74,27 @@ public:
       {
         std::unique_lock lk(cv_mutex_);
         try {
+          // crap code
           cv_.wait(lk, [this] {
+            if (!running_) {
+              return true;
+            }
+
             bool ready = (notify_count_ >= cv_size_);
             if (ready) {
               notify_count_ = 0;
             }
             return ready;
           });
-          // std::cout << id_ << ": Making ckp" << std::endl;
-          make_checkpoint(storage_, keys_for_checkpoint_);
+          if (!running_) {
+            return;
+          }
+
+          const auto start_time = std::chrono::system_clock::now();
+          // notify scheduler that checkpoint has started
+          pthread_barrier_wait(scheduler_barrier_);
+
+          make_checkpoint(storage_, keys_for_checkpoint_, start_time);
           keys_for_checkpoint_.clear();
           for (auto &cv : waiting_partitions_) {
             cv->notify_all();
@@ -89,9 +109,9 @@ public:
 
 private:
   void make_checkpoint(std::shared_ptr<kvstorage::Storage> storage,
-                       std::unordered_set<int> partition_used_keys) {
+                       std::unordered_set<int> partition_used_keys,
+                       std::chrono::system_clock::time_point start_time) {
     checkpoint_counter_++;
-    const auto start_time = std::chrono::system_clock::now();
     int ckp_size;
     try {
       ckp_size = serialize_storage_to_file(storage, partition_used_keys);
@@ -124,8 +144,19 @@ private:
       storage_row row;
       row.key = key;
       row.str_val = storage->read(key);
-      file.write(reinterpret_cast<char *>(&row), sizeof(row));
-      ckp_size += sizeof(row);
+
+      // Write key
+      file.write(reinterpret_cast<char *>(&row.key), sizeof(row.key));
+      ckp_size += sizeof(row.key);
+
+      // Write string length
+      size_t str_length = row.str_val.size();
+      file.write(reinterpret_cast<char *>(&str_length), sizeof(str_length));
+      ckp_size += sizeof(str_length);
+
+      // Write string data
+      file.write(row.str_val.c_str(), str_length);
+      ckp_size += str_length;
     }
     file.flush();
     file.close();
@@ -156,6 +187,7 @@ private:
   std::thread worker_thread_;
 
   std::unordered_set<int> keys_for_checkpoint_;
+  pthread_barrier_t* scheduler_barrier_;
 };
 
 } // namespace checkpoint

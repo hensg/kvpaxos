@@ -23,7 +23,7 @@ Request make_request(char* type_buffer, char* key_buffer, char* arg_buffer);
 
 std::vector<Request> import_requests(const std::string& file_path, const std::string& field);
 std::vector<Request> import_cs_requests(const std::string& file_path);
-std::vector<Request> import_cs_requests_csv(const std::string& file_path);
+std::vector<Request> import_cs_requests_csv(const std::string& file_path, int* max_key);
 
 /*
 Those generations were made for a simpler execution that doesn't differentiate

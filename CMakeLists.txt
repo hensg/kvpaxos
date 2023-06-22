@@ -11,6 +11,7 @@ conan(
         toml11/3.4.0
         libevent/2.1.11
         tbb/2020.1
+        fast-cpp-csv-parser/cci.20211104
 )
 
 include(cmake/add_libpaxos.cmake)

@@ -60,7 +60,7 @@ public:
             sem_post(&semaphore_);
             worker_thread_.join();
         }
-        delete checkpointer_;
+        storage_->get_storage().clear();
     }
 
     void start_worker_thread() {
@@ -142,76 +142,85 @@ private:
             }
 
             queue_mutex_.lock();
-                auto request = std::move(requests_queue_.front());
-                requests_queue_.pop();
+            if (!requests_queue_.empty()) {
+              client_message request = requests_queue_.front();
+              requests_queue_.pop();
+              queue_mutex_.unlock();
+
+              auto key = request.key;
+              auto type = static_cast<request_type>(request.type);
+              std::string request_args;
+              if (request.size > 0)
+                request_args = std::string(request.args);
+              else
+                request_args = "";
+
+              std::string answer;
+              switch (type)
+              {
+              case READ:
+              {
+                  answer = std::move(storage_->read(key));
+                  break;
+              }
+
+              case WRITE:
+              {
+                  storage_->write(key, request_args);
+                  answer = request_args;
+                  break;
+              }
+
+              case SCAN:
+              {
+                  auto length = std::stoi(request_args);
+                  auto values = std::move(storage_->scan(key, length));
+
+                  std::ostringstream oss;
+                  std::copy(values.begin(), values.end(), std::ostream_iterator<std::string>(oss, ","));
+                  answer = std::string(oss.str());
+
+                  std::vector<T> keys(length);
+                  std::iota(keys.begin(), keys.end(), 1);
+                  break;
+              }
+
+              case SYNC:
+              {
+                  auto barrier = (pthread_barrier_t*) request.s_addr;
+                  auto coordinator = pthread_barrier_wait(barrier);
+                  if (coordinator) {
+                      pthread_barrier_destroy(barrier);
+                      delete barrier;
+                  }
+                  break;
+              }
+
+              case CHECKPOINT:
+              {
+                  std::unique_lock lk(queue_mutex_);
+                  std::shared_ptr<std::condition_variable> cv = std::make_shared<std::condition_variable>();
+                  checkpointer_->time_for_checkpoint(request.keys, cv);
+                  cv->wait(lk);
+                  break;
+              }
+
+              case ERROR:
+              {
+                  answer = "ERROR";
+                  exit(1);
+              }
+              default:
+                  break;
+              }
+
+              if (type == WRITE || type == READ || type == SCAN) {
+                  n_executed_requests_++;
+              }
+
+          } else {
             queue_mutex_.unlock();
-
-            auto key = request.key;
-            auto type = static_cast<request_type>(request.type);
-            auto request_args = std::string(request.args);
-
-            std::string answer;
-            switch (type)
-            {
-            case READ:
-            {
-                answer = std::move(storage_->read(key));
-                break;
-            }
-
-            case WRITE:
-            {
-                storage_->write(key, request_args);
-                answer = request_args;
-                break;
-            }
-
-            case SCAN:
-            {
-                auto length = std::stoi(request_args);
-                auto values = std::move(storage_->scan(key, length));
-
-                std::ostringstream oss;
-                std::copy(values.begin(), values.end(), std::ostream_iterator<std::string>(oss, ","));
-                answer = std::string(oss.str());
-
-                std::vector<T> keys(length);
-                std::iota(keys.begin(), keys.end(), 1);
-                break;
-            }
-
-            case SYNC:
-            {
-                auto barrier = (pthread_barrier_t*) request.s_addr;
-                auto coordinator = pthread_barrier_wait(barrier);
-                if (coordinator) {
-                    pthread_barrier_destroy(barrier);
-                    delete barrier;
-                }
-                break;
-            }
-
-            case CHECKPOINT:
-            {
-                std::unique_lock lk(queue_mutex_);
-                std::shared_ptr<std::condition_variable> cv = std::make_shared<std::condition_variable>();
-                checkpointer_->time_for_checkpoint(request.keys, cv);
-                cv->wait(lk);
-                break;
-            }
-
-            case ERROR:
-            {
-                answer = "ERROR";
-                exit(1);
-            }
-            default:
-                break;
-            }
-
-            if (type == WRITE || type == READ || type == SCAN) {
-                n_executed_requests_++;
-            }
+          }
         }
     }
 

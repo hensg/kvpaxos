@@ -14,13 +14,17 @@ Request make_request(char* type_buffer, char* key_buffer, char* arg_buffer) {
     return Request(type, key, arg);
 }
 
-std::vector<Request> import_cs_requests_csv(const std::string& file_path) {
+std::vector<Request> import_cs_requests_csv(const std::string& file_path, int* max_key) {
   io::CSVReader<4> in(file_path);
   in.set_header("type", "key", "arg", "ignore");
   std::vector<Request> requests;
   int type; long key; std::string arg; std::string ignore;
   while(in.read_row(type, key, arg, ignore)){
     requests.emplace_back(Request(static_cast<request_type>(type), key, arg));
+    const int key_range = key + std::stoi(arg);
+    if (key_range > *max_key) {
+      *max_key = key_range;
+    }
   }
   return requests;
 }

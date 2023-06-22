@@ -30,7 +30,7 @@ const std::unordered_map<std::string, CutMethod> string_to_cut_method({
 });
 
 std::vector<int> cut_graph (
-    const Graph<int>& graph,
+    Graph<int>& graph,
     std::unordered_map<int, kvpaxos::Partition<int>*>& partitions,
     CutMethod method,
     const std::unordered_map<int, kvpaxos::Partition<int>*>& old_data_to_partition,
@@ -40,12 +40,12 @@ std::vector<int> cut_graph (
 );
 
 std::vector<int> multilevel_cut
-    (const Graph<int>& graph, int n_partitions, CutMethod cut_method, int sliding_window_time);
+    (Graph<int>& graph, int n_partitions, CutMethod cut_method, int sliding_window_time);
 
-std::vector<int> fennel_cut(const Graph<int>& graph, int n_partitions);
+std::vector<int> fennel_cut(Graph<int>& graph, int n_partitions);
 
 std::vector<int> refennel_cut(
-    const Graph<int>& graph,
+    Graph<int>& graph,
     const std::unordered_map<int, kvpaxos::Partition<int>*>& old_data_to_partition,
     std::unordered_map<int, kvpaxos::Partition<int>*>& partitions,
     bool first_repartition
@@ -57,7 +57,7 @@ int fennel_inter_cost(
 );
 template <typename T>
 int fennel_vertice_partition(
-    const Graph<int>& graph,
+    Graph<int>& graph,
     int vertice,
     const T& partitions,
     const std::unordered_map<int, int>& vertice_to_partition,
